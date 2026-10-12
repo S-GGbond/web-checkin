@@ -41,18 +41,22 @@ WorkBuddy / Trae / Qoder 多账号签到与用量查询中枢。项目提供一�
 
 页面自上而下分为：
 
-1. 账号统计卡片区。
-2. 添加账号与独立定时说明。
-3. 账号管理。
-4. WorkBuddy 积分消耗明细。
-5. Trae 积分用量。
-6. 执行日志。
+1. 顶部栏（品牌、时钟、自动刷新、刷新余额、全部签到）。
+2. 账号统计卡片区。
+3. 添加账号（三平台官方授权登录）与独立定时说明。
+4. 托管账号列表（按平台分组，卡片内含余额/活动状态、签到状态、每日定时、操作按钮）。
+5. WorkBuddy 积分消耗明细。
+6. Trae 积分用量。
+7. 执行日志。
+
+> 每日定时时间在「托管账号列表」中每张账号卡片的「定时」入口里单独设置。
 
 ## 环境要求
 
 - Python 3.11 或更高版本。
 - 现代浏览器。
 - 各平台的官方授权页面可正常访问。
+- 仅当需要修改界面时，才需要 Node.js 20+（构建前端）。
 
 ## 安装
 
@@ -63,6 +67,14 @@ python -m pip install -r requirements.txt
 ```
 
 依赖包括 FastAPI、Uvicorn、cryptography 和 APScheduler。
+
+前端已把构建产物提交到 `static/`，**无需 Node 即可直接运行**。只有在改动 `frontend/` 源码后才需要重新构建：
+
+```bash
+cd frontend
+npm install
+npm run build   # 产物输出到 ../static
+```
 
 ## 启动
 
@@ -160,9 +172,9 @@ Qoder 登录脚本已内置在项目内。服务启动时会尝试从 `QODER_DAT
 ## 测试
 
 ```bash
-python -m unittest -v test_qoder_status.py test_trae_usage.py test_workbuddy_usage.py
+python -m unittest -v test_qoder_status.py test_trae_usage.py test_workbuddy_usage.py test_trae_login_callback.py
 python -m py_compile account_store.py app.py qoder_login.py qoder_checkin.py qoder_tool.py trae_tool.py trae_usage.py workbuddy_tool.py workbuddy_usage.py
-node --check static/app.js
+cd frontend && npm run lint   # 前端类型检查
 ```
 
 ## 项目结构
@@ -171,10 +183,16 @@ node --check static/app.js
 .
 ├── app.py                        # FastAPI 服务、路由、调度器
 ├── account_store.py              # 统一账号和日志存储
-├── static/
-│   ├── index.html                # 页面结构
-│   ├── app.js                    # 前端交互和图表
-│   └── styles.css                # 界面样式
+├── frontend/                     # 界面源码（React + Vite + Tailwind）
+│   ├── src/
+│   │   ├── App.tsx               # 页面组装
+│   │   ├── components/           # 顶部栏、统计、账号卡片、用量、日志、弹窗
+│   │   ├── services/api.ts       # 对接 FastAPI 的数据访问层
+│   │   └── types/index.ts        # 与后端对齐的类型定义
+│   └── vite.config.ts            # 构建输出到 ../static
+├── static/                       # 前端构建产物（由 npm run build 生成）
+│   ├── index.html
+│   └── assets/
 ├── trae_tool.py                  # Trae 登录、状态、签到
 ├── trae_usage.py                 # Trae 用量查询与聚合
 ├── workbuddy_tool.py             # WorkBuddy 登录、状态、签到
@@ -185,8 +203,11 @@ node --check static/app.js
 ├── qoder_tool.py                 # Qoder Web Hub 接入
 ├── workbuddy-tools/              # 独立 Node.js 工具集
 ├── test_trae_usage.py            # Trae 用量测试
+├── test_trae_login_callback.py   # Trae 登录本地回调回归测试
 └── test_workbuddy_usage.py       # WorkBuddy 用量测试
 ```
+
+> `static/` 是前端构建产物，请勿手工编辑；修改界面请改 `frontend/src/` 后重新 `npm run build`。
 
 ## WorkBuddy 独立工具
 
