@@ -50,25 +50,31 @@ SALT_B = bytes([
 SALT = bytes(a ^ b for a, b in zip(SALT_A, SALT_B))
 
 
-class _CallbackHandler(BaseHTTPRequestHandler):
-    session: dict[str, Any]
+def _make_callback_handler(session: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
+    """为单个登录会话构造回调处理器，把本次回调结果写入对应会话。
 
-    def do_GET(self) -> None:
-        parsed = urllib.parse.urlparse(self.path)
-        if parsed.path != "/authorize":
-            self.send_response(404)
+    必须按会话绑定（而不是用类属性），否则并发登录时回调会串到别的会话。
+    """
+
+    class _CallbackHandler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            parsed = urllib.parse.urlparse(self.path)
+            if parsed.path != "/authorize":
+                self.send_response(404)
+                self.end_headers()
+                return
+            session["search"] = parsed.query
+            session["event"].set()
+            body = "<!doctype html><meta charset='utf-8'><title>Trae 登录成功</title><body style='font-family:system-ui;text-align:center;padding:60px'><h2>登录成功</h2><p>可以关闭本页面。</p></body>"
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
             self.end_headers()
-            return
-        self.session["search"] = parsed.query
-        self.session["event"].set()
-        body = "<!doctype html><meta charset='utf-8'><title>Trae 登录成功</title><body style='font-family:system-ui;text-align:center;padding:60px'><h2>登录成功</h2><p>可以关闭本页面。</p></body>"
-        self.send_response(200)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.end_headers()
-        self.wfile.write(body.encode("utf-8"))
+            self.wfile.write(body.encode("utf-8"))
 
-    def log_message(self, format: str, *args: Any) -> None:
-        return
+        def log_message(self, format: str, *args: Any) -> None:
+            return
+
+    return _CallbackHandler
 
 
 class TraeTool:
@@ -329,7 +335,6 @@ class TraeTool:
         identity = self._identity()
         version = self._client_version()
         event = threading.Event()
-        server = HTTPServer(("127.0.0.1", 0), _CallbackHandler)
         session: dict[str, Any] = {
             "id": str(uuid.uuid4()),
             "provider": "trae",
@@ -338,11 +343,14 @@ class TraeTool:
             "account": None,
             "event": event,
             "search": None,
-            "server": server,
+            "server": None,
             "deadline": time.monotonic() + timeout,
             "verifier": verifier,
             "label": label,
         }
+        # 回调服务器按会话创建并立即开始监听，确保浏览器回跳时能收到授权码。
+        server = HTTPServer(("127.0.0.1", 0), _make_callback_handler(session))
+        session["server"] = server
         port = server.server_address[1]
         query = urllib.parse.urlencode(
             {
@@ -378,6 +386,7 @@ class TraeTool:
                 webbrowser.open(session["auth_url"])
             except Exception:
                 pass
+        threading.Thread(target=server.serve_forever, daemon=True).start()
         threading.Thread(target=self._wait_login, args=(session["id"],), daemon=True).start()
         return self.public_login(session)
 
