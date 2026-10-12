@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>签到中枢 · WorkBuddy / Trae / Qoder</title>
+  <link rel="stylesheet" href="/static/styles.css?v=1">
+</head>
+<body>
+  <div class="backdrop"></div>
+  <main class="shell">
+    <header class="topbar">
+      <div>
+        <div class="brand">
+          <span class="logo">签</span>
+          <div>
+            <h1>签到中枢</h1>
+            <p>WorkBuddy / Trae / Qoder · 本地账号动态管理</p>
+          </div>
+        </div>
+      </div>
+      <div class="top-actions">
+        <span class="local-badge"><i></i> 本机授权账号</span>
+        <button class="btn ghost" id="refreshAllBtn">刷新余额</button>
+        <button class="btn primary" id="checkinAllBtn">全部签到</button>
+      </div>
+    </header>
+
+    <section class="stats-grid">
+      <article class="stat-card"><span>账号总数</span><strong id="statTotal">0</strong><small>WorkBuddy + Trae + Qoder</small></article>
+      <article class="stat-card"><span>已启用</span><strong id="statEnabled">0</strong><small>参与定时任务</small></article>
+      <article class="stat-card"><span>今日已签</span><strong id="statChecked">0</strong><small>平台实时签到状态</small></article>
+      <article class="stat-card"><span>已设定时</span><strong id="statScheduled">0</strong><small>账号独立每日执行</small></article>
+    </section>
+
+    <section class="panel-grid">
+      <article class="panel">
+        <div class="panel-head">
+          <div><h2>添加账号</h2><p>登录后自动写入本地 SQLite</p></div>
+        </div>
+        <div class="add-grid">
+          <button class="provider-btn workbuddy" data-login="workbuddy"><strong>WorkBuddy 登录</strong><span>浏览器 OAuth 授权</span></button>
+          <button class="provider-btn trae" data-login="trae"><strong>Trae 登录</strong><span>Web PKCE 授权</span></button>
+          <button class="provider-btn qoder" data-login="qoder"><strong>Qoder 登录</strong><span>设备码 PKCE 授权</span></button>
+        </div>
+      </article>
+
+      <article class="panel schedule-overview">
+        <div class="panel-head">
+          <div><h2>独立定时</h2><p>每张账号卡片可设置自己的每日签到时间</p></div>
+          <span class="schedule-icon">◷</span>
+        </div>
+        <div class="schedule-note"><span class="schedule-dot"></span><span>按本机时区执行；错过时间后当日补跑一次</span></div>
+      </article>
+    </section>
+
+    <section class="section-head">
+      <h2>账号管理</h2>
+      <span id="accountCount" class="muted"></span>
+    </section>
+    <section class="account-grid" id="accountGrid"></section>
+
+    <section class="usage-section">
+      <div class="section-head">
+        <div><h2>WorkBuddy 积分消耗明细</h2><p class="muted">临时 Cookie 仅用于本次查询，不会保存到账号或日志</p></div>
+        <div class="usage-actions">
+          <span id="usageCount" class="muted"></span>
+          <button class="btn ghost small" id="exportUsageBtn" disabled>导出 CSV</button>
+        </div>
+      </div>
+      <form class="usage-form" id="usageForm" autocomplete="off">
+        <label>开始日期<input id="usageStart" type="date" required></label>
+        <label>结束日期<input id="usageEnd" type="date" required></label>
+        <label class="cookie-field">浏览器 Cookie<textarea id="usageCookie" rows="2" maxlength="65536" placeholder="从 WorkBuddy 浏览器开发者工具复制 Cookie 请求头" autocomplete="off" spellcheck="false" required></textarea></label>
+        <button class="btn primary" id="queryUsageBtn" type="submit">查询明细</button>
+      </form>
+      <div class="usage-panels">
+        <article class="usage-panel">
+          <header class="usage-panel-head"><h3>每日积分趋势</h3><span id="usageChartMeta" class="muted">暂无数据</span></header>
+          <div class="usage-panel-chart"><canvas id="usageChart" role="img" aria-label="WorkBuddy 每日积分消耗曲线"></canvas></div>
+        </article>
+        <article class="usage-panel">
+          <header class="usage-panel-head">
+            <h3>请求明细</h3>
+            <div class="pagination-toolbar">
+              <label>每页<select id="usagePageSize"><option value="20" selected>20</option><option value="50">50</option><option value="100">100</option></select></label>
+              <button class="btn ghost small" id="usagePrevPage" type="button" disabled>上一页</button>
+              <span id="usagePageInfo" class="muted">第 1 / 1 页</span>
+              <button class="btn ghost small" id="usageNextPage" type="button" disabled>下一页</button>
+            </div>
+          </header>
+          <div class="usage-table-wrap">
+            <table class="usage-table">
+              <thead><tr><th>请求时间</th><th>请求名</th><th>模型</th><th>客户端</th><th>积分</th></tr></thead>
+              <tbody id="usageRows"><tr><td colspan="5" class="usage-empty">选择日期并提交 Cookie 后查询</td></tr></tbody>
+            </table>
+          </div>
+        </article>
+      </div>
+    </section>
+
+    <section class="trae-usage-section" aria-labelledby="traeUsageTitle">
+      <div class="section-head">
+        <div><h2 id="traeUsageTitle">Trae 积分用量</h2><p class="muted">按已授权账号查询积分消耗，并按天统计趋势</p></div>
+        <div class="usage-actions"><span id="traeUsageCount" class="muted" aria-live="polite"></span></div>
+      </div>
+      <form class="trae-usage-toolbar" id="traeUsageForm">
+        <label>开始日期<input id="traeUsageStart" type="date" required></label>
+        <label>结束日期<input id="traeUsageEnd" type="date" required></label>
+        <button class="btn primary" id="queryTraeUsageBtn" type="submit">查询用量</button>
+      </form>
+      <div id="traeUsageSummary" class="trae-usage-summary" aria-live="polite">
+        <div class="usage-placeholder">选择日期范围并查询 Trae 账号用量</div>
+      </div>
+      <div id="traeUsageAccounts" class="trae-usage-accounts"></div>
+    </section>
+
+    <section class="section-head">
+      <h2>执行日志</h2>
+      <button class="btn ghost small" id="reloadLogsBtn">刷新日志</button>
+    </section>
+    <section class="log-panel"><div id="logList" class="log-list"></div></section>
+  </main>
+
+  <div class="modal hidden" id="loginModal">
+    <div class="modal-card">
+      <h3 id="loginTitle">登录中</h3>
+      <p id="loginMessage">等待授权...</p>
+      <div class="url-box"><code id="loginUrl"></code></div>
+      <div class="modal-actions">
+        <a class="btn primary" id="openLoginUrl" target="_blank" rel="noopener">打开授权页</a>
+        <button class="btn ghost" id="copyLoginUrl">复制链接</button>
+        <button class="btn ghost" id="closeLoginModal">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toasts" class="toasts"></div>
+  <script src="/static/app.js?v=1"></script>
+</body>
+</html>

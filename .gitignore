@@ -1,0 +1,34 @@
+# Python 运行缓存
+__pycache__/
+*.py[cod]
+
+# 本地账号数据库、登录态与凭据
+*.sqlite3
+*.sqlite
+*.sqlite3-shm
+*.sqlite3-wal
+*.db
+.env
+.venv/
+trae-identity.json
+qoder_auth.json
+machine_id.txt
+workbuddy-session.json
+cookies.txt
+*.cookie
+
+# 本地运行截图与浏览器调试数据
+.playwright-mcp/
+*.png
+
+# 仅保留在本机的历史 README / 逆向分析资料
+README-checkin-hub.md
+analysis_report.md
+call_chain.md
+reproduction_steps.md
+tool_inventory.md
+
+# 独立 Git 数据目录与系统文件
+.git-data/
+.DS_Store
+node_modules/
