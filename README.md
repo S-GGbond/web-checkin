@@ -1,5 +1,9 @@
 # Web Check-in Hub
 
+[![PyPI](https://img.shields.io/pypi/v/web-checkin.svg)](https://pypi.org/project/web-checkin/)
+[![PyPI - Python Version](https://img.shields.io/pypi/pyversions/web-checkin.svg)](https://pypi.org/project/web-checkin/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+
 WorkBuddy / Trae / Qoder 多账号签到与用量查询中枢。项目提供一个 FastAPI 本地 Web 服务，把各平台的账号状态、余额、签到结果和用量明细放在同一个界面中管理。
 
 > 仅供个人管理自己拥有授权的账号。请不要用于批量注册、共享账号、绕过平台限制或任何违反平台服务条款的场景。
@@ -60,26 +64,41 @@ WorkBuddy / Trae / Qoder 多账号签到与用量查询中枢。项目提供一�
 
 ## 安装
 
+推荐从 PyPI 安装为独立命令（pipx 会为它创建隔离环境）：
+
+```bash
+pipx install web-checkin
+```
+
+也可以直接用 pip：
+
+```bash
+pip install web-checkin
+```
+
+从源码安装：
+
 ```bash
 python -m venv .venv
 source .venv/bin/activate
 python -m pip install -r requirements.txt
+# 或直接安装本仓库：pip install .
 ```
 
 依赖包括 FastAPI、Uvicorn、cryptography 和 APScheduler。
 
-前端已把构建产物提交到 `static/`，**无需 Node 即可直接运行**。只有在改动 `frontend/` 源码后才需要重新构建：
+前端已把构建产物提交到 `web_checkin/static/`，**无需 Node 即可直接运行**。只有在改动 `frontend/` 源码后才需要重新构建：
 
 ```bash
 cd frontend
 npm install
-npm run build   # 产物输出到 ../static
+npm run build   # 产物输出到 ../web_checkin/static
 ```
 
 ## 启动
 
 ```bash
-python -m uvicorn app:app --host 127.0.0.1 --port 8320
+web-checkin
 ```
 
 打开：
@@ -88,16 +107,42 @@ python -m uvicorn app:app --host 127.0.0.1 --port 8320
 http://127.0.0.1:8320
 ```
 
+也可以直接从源码运行（开发时）：
+
+```bash
+python -m web_checkin
+# 或：python -m uvicorn web_checkin.app:app --host 127.0.0.1 --port 8320
+```
+
+命令行参数：
+
+| 参数 | 说明 | 默认值 |
+|---|---|---|
+| `--host` | 监听地址 | `127.0.0.1` |
+| `--port` | 监听端口 | `8320` |
+| `--db` | 账号数据库路径 | 用户数据目录下的 `checkin-hub.sqlite3` |
+| `--no-browser` | 启动后不自动打开浏览器 | 关闭 |
+| `--log-level` | uvicorn 日志级别 | `info` |
+
 服务默认只监听本机地址。不要直接把无认证的管理端暴露到公网。如需局域网访问，请自行添加反向代理、访问控制和 HTTPS。
 
 ## 环境变量
 
 | 变量 | 说明 | 默认值 |
 |---|---|---|
-| `CHECKIN_HUB_DB` | 统一账号数据库路径 | `checkin-hub.sqlite3` |
-| `TRAE_IDENTITY_PATH` | Trae 设备指纹文件路径 | 项目目录下的 `trae-identity.json` |
+| `WEB_CHECKIN_HOME` | 应用数据目录（数据库、设备指纹等） | 平台数据目录，见下 |
+| `CHECKIN_HUB_DB` | 统一账号数据库路径 | `WEB_CHECKIN_HOME/checkin-hub.sqlite3` |
+| `TRAE_IDENTITY_PATH` | Trae 设备指纹文件路径 | `WEB_CHECKIN_HOME/trae-identity.json` |
 | `TRAE_LEGACY_DB` | 可选的旧 Trae 数据库路径 | `~/.trae-checkin/trae_checkin.db` |
 | `QODER_DATA_DIR` | Qoder 登录态和机器 ID 目录 | `~/.qoder-checkin` |
+
+应用数据目录按平台自动选择：
+
+- Linux：`$XDG_DATA_HOME/web-checkin` 或 `~/.local/share/web-checkin`
+- macOS：`~/Library/Application Support/web-checkin`
+- Windows：`%LOCALAPPDATA%\web-checkin`
+
+兼容旧用法：如果应用数据目录里还没有 `checkin-hub.sqlite3` / `trae-identity.json`，而当前工作目录存在同名旧文件，会继续复用旧文件，方便从仓库目录直接运行平滑迁移。
 
 Qoder 登录脚本已内置在项目内。服务启动时会尝试从 `QODER_DATA_DIR/qoder_auth.json` 导入既有登录态；目录不存在或还没有登录态时，不影响 WorkBuddy / Trae 启动。
 
@@ -146,7 +191,7 @@ Qoder 登录脚本已内置在项目内。服务启动时会尝试从 `QODER_DAT
 
 ## 数据库
 
-统一账号数据库默认为项目目录下的 `checkin-hub.sqlite3`。
+统一账号数据库默认为应用数据目录下的 `checkin-hub.sqlite3`（见「环境变量」），也可用 `--db` 或 `CHECKIN_HUB_DB` 指定。
 
 核心表：
 
@@ -173,7 +218,7 @@ Qoder 登录脚本已内置在项目内。服务启动时会尝试从 `QODER_DAT
 
 ```bash
 python -m unittest -v test_qoder_status.py test_trae_usage.py test_workbuddy_usage.py test_trae_login_callback.py
-python -m py_compile account_store.py app.py qoder_login.py qoder_checkin.py qoder_tool.py trae_tool.py trae_usage.py workbuddy_tool.py workbuddy_usage.py
+python -m compileall -q web_checkin
 cd frontend && npm run lint   # 前端类型检查
 ```
 
@@ -181,33 +226,49 @@ cd frontend && npm run lint   # 前端类型检查
 
 ```text
 .
-├── app.py                        # FastAPI 服务、路由、调度器
-├── account_store.py              # 统一账号和日志存储
+├── pyproject.toml                # 打包配置（命令入口：web-checkin）
+├── web_checkin/                  # Python 包
+│   ├── __init__.py
+│   ├── __main__.py               # python -m web_checkin
+│   ├── cli.py                    # 命令行入口，参数解析 + 启动 uvicorn
+│   ├── paths.py                  # 静态资源 / 数据目录 / 数据库路径解析
+│   ├── app.py                    # FastAPI 服务、路由、调度器
+│   ├── account_store.py          # 统一账号和日志存储
+│   ├── trae_tool.py              # Trae 登录、状态、签到
+│   ├── trae_usage.py             # Trae 用量查询与聚合
+│   ├── workbuddy_tool.py         # WorkBuddy 登录、状态、签到
+│   ├── workbuddy_usage.py        # WorkBuddy 用量查询脚本
+│   ├── workbuddy_common.py       # WorkBuddy 公共请求与存储
+│   ├── workbuddy_login.py        # WorkBuddy 独立登录脚本
+│   ├── workbuddy_checkin.py      # WorkBuddy 独立签到脚本
+│   ├── qoder_tool.py             # Qoder Web Hub 接入
+│   ├── qoder_login.py            # Qoder 设备码登录
+│   ├── qoder_checkin.py          # Qoder 独立签到脚本
+│   └── static/                   # 前端构建产物（由 npm run build 生成）
+│       ├── index.html
+│       └── assets/
 ├── frontend/                     # 界面源码（React + Vite + Tailwind）
 │   ├── src/
 │   │   ├── App.tsx               # 页面组装
 │   │   ├── components/           # 顶部栏、统计、账号卡片、用量、日志、弹窗
 │   │   ├── services/api.ts       # 对接 FastAPI 的数据访问层
 │   │   └── types/index.ts        # 与后端对齐的类型定义
-│   └── vite.config.ts            # 构建输出到 ../static
-├── static/                       # 前端构建产物（由 npm run build 生成）
-│   ├── index.html
-│   └── assets/
-├── trae_tool.py                  # Trae 登录、状态、签到
-├── trae_usage.py                 # Trae 用量查询与聚合
-├── workbuddy_tool.py             # WorkBuddy 登录、状态、签到
-├── workbuddy_usage.py            # WorkBuddy 用量查询脚本
-├── workbuddy_common.py           # WorkBuddy 公共请求与存储
-├── qoder_login.py                # Qoder 设备码登录（Python）
-├── qoder_checkin.py              # Qoder 独立签到脚本（Python）
-├── qoder_tool.py                 # Qoder Web Hub 接入
+│   └── vite.config.ts            # 构建输出到 ../web_checkin/static
 ├── workbuddy-tools/              # 独立 Node.js 工具集
 ├── test_trae_usage.py            # Trae 用量测试
 ├── test_trae_login_callback.py   # Trae 登录本地回调回归测试
-└── test_workbuddy_usage.py       # WorkBuddy 用量测试
+├── test_workbuddy_usage.py       # WorkBuddy 用量测试
+└── test_qoder_status.py          # Qoder 状态解析测试
 ```
 
-> `static/` 是前端构建产物，请勿手工编辑；修改界面请改 `frontend/src/` 后重新 `npm run build`。
+> `web_checkin/static/` 是前端构建产物，请勿手工编辑；修改界面请改 `frontend/src/` 后重新 `npm run build`。
+
+包内的独立脚本（如 Qoder / WorkBuddy 登录、签到、用量）改用模块方式运行，例如：
+
+```bash
+python -m web_checkin.qoder_checkin --list
+python -m web_checkin.trae_usage --start 2026-10-01 --end 2026-10-15
+```
 
 ## WorkBuddy 独立工具
 

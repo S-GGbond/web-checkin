@@ -13,8 +13,8 @@ import uuid
 import webbrowser
 from typing import Any
 
-import qoder_login
-from account_store import AccountStore
+from . import qoder_login
+from .account_store import AccountStore
 
 
 OPENAPI_BASE = "https://openapi.qoder.com.cn"

@@ -2,7 +2,7 @@ import unittest
 import io
 import json
 
-from workbuddy_usage import fetch_usage, write_csv
+from web_checkin.workbuddy_usage import fetch_usage, write_csv
 
 
 class FakeResponse:

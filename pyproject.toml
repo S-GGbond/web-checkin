@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "web-checkin"
+version = "1.1.0"
+description = "WorkBuddy / Trae / Qoder 多账号签到与用量查询的本地 Web 中枢"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "S-GGbond" }]
+keywords = ["checkin", "workbuddy", "trae", "qoder", "fastapi"]
+classifiers = [
+    "Environment :: Console",
+    "Environment :: Web Environment",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Utilities",
+]
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+    "cryptography>=42",
+    "apscheduler>=3.10,<4",
+]
+
+[project.urls]
+Homepage = "https://github.com/S-GGbond/web-checkin"
+Repository = "https://github.com/S-GGbond/web-checkin"
+Issues = "https://github.com/S-GGbond/web-checkin/issues"
+
+[project.scripts]
+web-checkin = "web_checkin.cli:main"
+
+[tool.setuptools]
+packages = ["web_checkin"]
+
+[tool.setuptools.package-data]
+web_checkin = ["static/*", "static/assets/*"]

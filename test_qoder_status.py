@@ -1,6 +1,6 @@
 import unittest
 
-from qoder_tool import QoderTool
+from web_checkin.qoder_tool import QoderTool
 
 
 class QoderStatusTests(unittest.TestCase):

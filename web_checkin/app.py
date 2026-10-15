@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import asyncio
-import os
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
@@ -18,15 +17,16 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from account_store import AccountStore, DEFAULT_HUB_DB
-from qoder_tool import QoderTool
-from trae_tool import TraeTool
-from trae_usage import fetch_usage as fetch_trae_usage
-from workbuddy_tool import WorkBuddyTool
-from workbuddy_usage import fetch_usage
+from .account_store import AccountStore
+from .paths import STATIC_DIR, default_db_path
+from .qoder_tool import QoderTool
+from .trae_tool import TraeTool
+from .trae_usage import fetch_usage as fetch_trae_usage
+from .workbuddy_tool import WorkBuddyTool
+from .workbuddy_usage import fetch_usage
 
 
-DATABASE_PATH = os.environ.get("CHECKIN_HUB_DB", DEFAULT_HUB_DB)
+DATABASE_PATH = str(default_db_path())
 store = AccountStore(DATABASE_PATH)
 workbuddy = WorkBuddyTool(store)
 trae = TraeTool(store)
@@ -99,12 +99,12 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title="WorkBuddy / Trae / Qoder 签到管理", version="1.1.0", lifespan=lifespan)
-app.mount("/static", StaticFiles(directory="static"), name="static")
+app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 
 @app.get("/")
 async def index():
-    return FileResponse("static/index.html")
+    return FileResponse(STATIC_DIR / "index.html")
 
 
 @app.get("/api/health")

@@ -20,7 +20,8 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any
 
-from account_store import AccountStore
+from .account_store import AccountStore
+from .paths import default_identity_path
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
@@ -78,9 +79,9 @@ def _make_callback_handler(session: dict[str, Any]) -> type[BaseHTTPRequestHandl
 
 
 class TraeTool:
-    def __init__(self, store: AccountStore, identity_path: str | Path = "trae-identity.json"):
+    def __init__(self, store: AccountStore, identity_path: str | Path | None = None):
         self.store = store
-        self.identity_path = Path(identity_path)
+        self.identity_path = Path(identity_path) if identity_path else default_identity_path()
         self._login_sessions: dict[str, dict[str, Any]] = {}
         self._lock = threading.Lock()
 
@@ -113,6 +114,7 @@ class TraeTool:
             "deviceId": secrets.token_hex(16),
             "deviceName": "Linux-PC",
         }
+        self.identity_path.parent.mkdir(parents=True, exist_ok=True)
         self.identity_path.write_text(json.dumps(identity, ensure_ascii=False, indent=2), encoding="utf-8")
         try:
             os.chmod(self.identity_path, 0o600)

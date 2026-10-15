@@ -8,13 +8,18 @@ import sqlite3
 import time
 from typing import Any, Iterable
 
+from .paths import default_db_path
 
-DEFAULT_HUB_DB = "checkin-hub.sqlite3"
+
+DEFAULT_HUB_DB = str(default_db_path())
 
 
 class AccountStore:
     def __init__(self, db_path: str = DEFAULT_HUB_DB):
         self.db_path = db_path
+        parent = os.path.dirname(os.path.abspath(db_path))
+        if parent:
+            os.makedirs(parent, exist_ok=True)
         self._conn = sqlite3.connect(self.db_path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA foreign_keys = ON")

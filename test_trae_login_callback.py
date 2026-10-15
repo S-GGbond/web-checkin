@@ -13,7 +13,7 @@ import urllib.error
 import urllib.request
 from http.server import HTTPServer
 
-from trae_tool import _make_callback_handler
+from web_checkin.trae_tool import _make_callback_handler
 
 
 class TraeLoginCallbackTests(unittest.TestCase):

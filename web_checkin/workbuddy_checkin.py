@@ -8,7 +8,7 @@ import json
 import os
 import sys
 
-from workbuddy_common import (
+from .workbuddy_common import (
     DEFAULT_DB,
     DEFAULT_ENDPOINT,
     DEFAULT_HTTP_TIMEOUT,

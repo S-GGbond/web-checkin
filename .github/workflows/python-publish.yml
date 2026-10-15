@@ -1,0 +1,142 @@
+name: Publish Python package
+
+# 触发方式：
+#   1. 在 GitHub 上发布 Release  -> 发正式 PyPI
+#   2. 手动运行 Actions         -> 可选 testpypi（先验证）或 pypi
+#
+# 刻意不用 "push tag" 触发正式发布：发 Release 时往往同时推了标签，
+# 两个事件都发会导致第二次上传因版本已存在而报错，所以正式发布只认 Release。
+#
+# 首次使用前需要在 PyPI 配置 Trusted Publisher（无需保存任何 token）：
+#   PyPI      https://pypi.org/manage/account/publishing/
+#   TestPyPI  https://test.pypi.org/manage/account/publishing/
+#   填写：
+#     Owner            S-GGbond
+#     Repository       web-checkin
+#     Workflow name    python-publish.yml
+#     Environment      pypi      （TestPyPI 填 testpypi）
+#   仓库 Settings -> Environments 里没有同名环境时 GitHub 会自动创建，无需手动建。
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      target:
+        description: 发布目标
+        required: true
+        default: testpypi
+        type: choice
+        options:
+          - testpypi
+          - pypi
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: 构建 sdist 与 wheel
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: 安装构建工具
+        run: python -m pip install --upgrade build
+
+      # 纯 Python 包，前端产物 web_checkin/static/ 已提交在仓库里，无需 Node
+      - name: 构建
+        run: python -m build
+
+      - name: 校验元数据
+        run: |
+          python -m pip install --upgrade twine
+          python -m twine check dist/*
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: python-package-distributions
+          path: dist/
+
+  test:
+    name: 安装 wheel 并跑测试
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: python-package-distributions
+          path: dist/
+
+      - name: 安装构建产物
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install dist/*.whl
+
+      # 换到临时目录跑测试，确保 import 到的是刚装的 wheel，
+      # 而不是仓库里同名的 web_checkin/ 源码目录。
+      - name: 跑单元测试
+        run: |
+          mkdir -p /tmp/smoke
+          cp test_*.py /tmp/smoke/
+          cd /tmp/smoke
+          python -m unittest -v \
+            test_qoder_status.py \
+            test_trae_usage.py \
+            test_workbuddy_usage.py \
+            test_trae_login_callback.py
+
+      - name: 冒烟测试命令行入口
+        run: |
+          web-checkin --help
+          python -m web_checkin --help
+
+  publish-to-testpypi:
+    name: 发布到 TestPyPI
+    needs: test
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'testpypi'
+    runs-on: ubuntu-latest
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/project/web-checkin/
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: python-package-distributions
+          path: dist/
+
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+
+  publish-to-pypi:
+    name: 发布到 PyPI
+    needs: test
+    if: >-
+      github.event_name == 'release' ||
+      (github.event_name == 'workflow_dispatch' && inputs.target == 'pypi')
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/web-checkin/
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: python-package-distributions
+          path: dist/
+
+      - uses: pypa/gh-action-pypi-publish@release/v1

@@ -12,7 +12,7 @@
 import argparse
 import sys
 
-import qoder_login
+from . import qoder_login
 
 OPENAPI_BASE = qoder_login.OPENAPI_BASE
 build_headers = qoder_login.build_headers

@@ -14,7 +14,7 @@ import uuid
 import webbrowser
 from typing import Any
 
-from account_store import AccountStore
+from .account_store import AccountStore
 
 
 DEFAULT_ENDPOINT = "https://www.workbuddy.cn"

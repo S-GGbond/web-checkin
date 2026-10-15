@@ -2,7 +2,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from trae_usage import date_range_timestamps, query_account
+from web_checkin.trae_usage import date_range_timestamps, query_account
 
 
 class FakeTrae:
@@ -58,7 +58,7 @@ class TraeUsageTests(unittest.TestCase):
             (200, {"total": 2, "user_usage_group_by_sessions": [record(stamp, 1.25)]}),
             (200, {"total": 2, "user_usage_group_by_sessions": [record(stamp + 3600, 2.5, "model-b")]}),
         ])
-        with patch("trae_usage.time.sleep"):
+        with patch("web_checkin.trae_usage.time.sleep"):
             result = query_account(fake, self.row, "2026-10-03", "2026-10-03", page_size=1)
         self.assertEqual([call[1]["page_num"] for call in fake.calls], [1, 2])
         self.assertEqual(fake.calls[0][1]["usage_type"], [7])

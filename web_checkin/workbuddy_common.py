@@ -12,9 +12,11 @@ import urllib.parse
 import urllib.request
 from typing import Any, Iterable
 
+from .paths import data_file
+
 
 DEFAULT_ENDPOINT = "https://www.workbuddy.cn"
-DEFAULT_DB = "workbuddy-checkin.sqlite3"
+DEFAULT_DB = str(data_file("workbuddy-checkin.sqlite3"))
 CLIENT_VERSION = "5.6.2"
 USER_AGENT = f"WorkBuddy/{CLIENT_VERSION}"
 AUTH_PREFIX = "/v2/plugin"
