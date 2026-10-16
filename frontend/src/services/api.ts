@@ -243,6 +243,15 @@ class ApiService {
     await this.request(`/api/accounts/${id}/status`, { method: 'POST' });
   }
 
+  /** 触发后端批量刷新全部账号状态（含 Trae / WorkBuddy 的真实余额）。 */
+  async refreshAllAccounts(): Promise<{ failed: number }> {
+    const res = await this.request<{
+      results: Array<{ account_id: number; provider: Platform; ok: boolean; message?: string }>;
+    }>('/api/status', { method: 'POST' });
+    const results = res.results || [];
+    return { failed: results.filter((r) => !r.ok).length };
+  }
+
   async updateAccount(
     id: string,
     data: { is_active?: boolean; schedule_enabled?: boolean; schedule_time?: string }

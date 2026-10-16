@@ -3,7 +3,10 @@ import { RefreshCw, Zap, Clock, CalendarCheck } from 'lucide-react';
 import { useToast } from './ui/Toast';
 
 interface HeaderProps {
+  /** 轻量刷新：只重新读取本地缓存数据（供自动刷新定时器调用）。 */
   onRefreshAll: () => Promise<void>;
+  /** 重量刷新：让后端重新拉取各平台真实余额（供“刷新余额”按钮调用）。 */
+  onRefreshBalances: () => Promise<void>;
   refreshInterval: number; // 0 表示关闭，否则为秒数
   setRefreshInterval: (sec: number) => void;
   isGlobalChecking: boolean;
@@ -12,6 +15,7 @@ interface HeaderProps {
 
 export const Header: React.FC<HeaderProps> = ({
   onRefreshAll,
+  onRefreshBalances,
   refreshInterval,
   setRefreshInterval,
   isGlobalChecking,
@@ -20,7 +24,7 @@ export const Header: React.FC<HeaderProps> = ({
   const [currentTime, setCurrentTime] = useState<string>('');
   const [countdown, setCountdown] = useState<number>(refreshInterval);
   const [isRefreshing, setIsRefreshing] = useState(false);
-  const { info } = useToast();
+  const { info, error } = useToast();
 
   useEffect(() => {
     const updateTime = () => {
@@ -58,9 +62,14 @@ export const Header: React.FC<HeaderProps> = ({
 
   const handleManualRefresh = async () => {
     setIsRefreshing(true);
-    await onRefreshAll();
-    setIsRefreshing(false);
-    info('已同步最新状态', '账号状态、签到结果与用量统计已刷新');
+    try {
+      await onRefreshBalances();
+      info('已同步最新状态', '账号状态、签到结果与用量统计已刷新');
+    } catch (err: any) {
+      error('刷新余额失败', err?.message || '请稍后重试');
+    } finally {
+      setIsRefreshing(false);
+    }
   };
 
   return (

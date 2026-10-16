@@ -49,6 +49,14 @@ function DashboardContent() {
     loadAllData();
   }, [loadAllData]);
 
+  const handleRefreshBalances = useCallback(async () => {
+    const { failed } = await apiService.refreshAllAccounts();
+    await loadAllData();
+    if (failed > 0) {
+      throw new Error(`${failed} 个账号刷新失败，详见执行日志`);
+    }
+  }, [loadAllData]);
+
   const handleCheckInAll = async () => {
     try {
       setIsGlobalChecking(true);
@@ -107,6 +115,7 @@ function DashboardContent() {
     <div className="min-h-screen bg-[#090d10] text-[#e2e8f0] flex flex-col font-sans selection:bg-emerald-500/20 selection:text-emerald-300">
       <Header
         onRefreshAll={loadAllData}
+        onRefreshBalances={handleRefreshBalances}
         refreshInterval={refreshInterval}
         setRefreshInterval={setRefreshInterval}
         isGlobalChecking={isGlobalChecking}

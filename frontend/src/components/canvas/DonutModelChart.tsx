@@ -7,9 +7,12 @@ interface Slice {
 }
 
 interface DonutModelChartProps {
+  /** 模型 -> 积分（credit）用量。 */
   data: Record<string, number>;
   height?: number;
   colors?: string[];
+  /** 圆环中心标题。 */
+  centerLabel?: string;
 }
 
 const DEFAULT_COLORS = [
@@ -21,10 +24,20 @@ const DEFAULT_COLORS = [
   '#ec4899', // Pink
 ];
 
+/** 积分数值格式化：小数值保留小数，大数值才压缩为 k/M，避免出现误导性的 "0k"。 */
+export function formatCredits(value: number): string {
+  if (!Number.isFinite(value)) return '0';
+  const abs = Math.abs(value);
+  if (abs >= 1_000_000) return `${(value / 1_000_000).toFixed(2)}M`;
+  if (abs >= 10_000) return `${(value / 1000).toFixed(1)}k`;
+  return value.toLocaleString('zh-CN', { maximumFractionDigits: 2 });
+}
+
 export const DonutModelChart: React.FC<DonutModelChartProps> = ({
   data,
   height = 220,
   colors = DEFAULT_COLORS,
+  centerLabel = '总计积分',
 }) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -47,15 +60,17 @@ export const DonutModelChart: React.FC<DonutModelChartProps> = ({
     if (!ctx) return;
 
     const dpr = window.devicePixelRatio || 1;
+    // 注意：这里取的是 canvas 自身容器（220px 槽位）的宽度，而不是外层 flex 行，
+    // 否则画布会被撑到整行宽度并与右侧图例重叠。
     const rect = container.getBoundingClientRect();
-    const width = rect.width;
+    const width = rect.width || 220;
 
     canvas.width = width * dpr;
     canvas.height = height * dpr;
     canvas.style.width = `${width}px`;
     canvas.style.height = `${height}px`;
 
-    ctx.scale(dpr, dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, width, height);
 
     if (total === 0) {
@@ -100,14 +115,12 @@ export const DonutModelChart: React.FC<DonutModelChartProps> = ({
     ctx.textBaseline = 'middle';
     ctx.fillStyle = '#94a3b8';
     ctx.font = '11px sans-serif';
-    ctx.fillText('总计 Token', centerX, centerY - 10);
+    ctx.fillText(centerLabel, centerX, centerY - 10);
 
     ctx.fillStyle = '#f1f5f9';
     ctx.font = '600 14px "JetBrains Mono", monospace';
-    const totalDisplay =
-      total > 1000000 ? `${(total / 1000000).toFixed(1)}M` : `${(total / 1000).toFixed(0)}k`;
-    ctx.fillText(totalDisplay, centerX, centerY + 10);
-  }, [slices, total, height, hoverIdx]);
+    ctx.fillText(formatCredits(total), centerX, centerY + 10);
+  }, [slices, total, height, hoverIdx, centerLabel]);
 
   useEffect(() => {
     drawDonut();
@@ -117,13 +130,13 @@ export const DonutModelChart: React.FC<DonutModelChartProps> = ({
   }, [drawDonut]);
 
   return (
-    <div ref={containerRef} className="flex flex-col md:flex-row items-center gap-4 w-full">
-      <div className="relative w-full max-w-[220px]">
+    <div className="flex flex-col md:flex-row items-center gap-4 w-full">
+      <div ref={containerRef} className="relative w-full max-w-[220px] shrink-0">
         <canvas ref={canvasRef} className="block mx-auto" />
       </div>
 
       {/* Legend */}
-      <div className="flex-1 w-full grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
+      <div className="flex-1 w-full flex flex-col gap-2 text-xs max-h-[200px] overflow-y-auto pr-1">
         {slices.map((slice, idx) => {
           const pct = total > 0 ? ((slice.value / total) * 100).toFixed(1) : '0';
           const isHovered = hoverIdx === idx;
@@ -132,16 +145,16 @@ export const DonutModelChart: React.FC<DonutModelChartProps> = ({
               key={slice.name}
               onMouseEnter={() => setHoverIdx(idx)}
               onMouseLeave={() => setHoverIdx(null)}
-              className={`flex items-center justify-between p-2 rounded transition-colors cursor-pointer ${
+              className={`flex items-center justify-between gap-2 p-2 rounded transition-colors cursor-pointer ${
                 isHovered ? 'bg-[#18232c] text-white' : 'bg-[#121a20] text-slate-300 hover:bg-[#152028]'
               }`}
             >
-              <div className="flex items-center gap-2 truncate">
+              <div className="flex items-center gap-2 min-w-0">
                 <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: slice.color }} />
-                <span className="truncate font-medium">{slice.name}</span>
+                <span className="truncate font-medium" title={slice.name}>{slice.name}</span>
               </div>
               <div className="flex items-center gap-2 font-mono ml-2 shrink-0">
-                <span className="text-slate-400">{(slice.value / 1000).toFixed(0)}k</span>
+                <span className="text-slate-400">{formatCredits(slice.value)}</span>
                 <span className="text-emerald-400 font-semibold">{pct}%</span>
               </div>
             </div>

@@ -98,13 +98,18 @@ async def lifespan(_: FastAPI):
         scheduler.shutdown(wait=False)
 
 
-app = FastAPI(title="WorkBuddy / Trae / Qoder 签到管理", version="1.1.0", lifespan=lifespan)
+app = FastAPI(title="WorkBuddy / Trae / Qoder 签到管理", version="1.1.1", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 
 @app.get("/")
 async def index():
-    return FileResponse(STATIC_DIR / "index.html")
+    # index.html 引用带 hash 的静态资源，必须每次都向服务端校验，
+    # 否则浏览器会长期复用旧的 HTML/JS，导致重新构建后页面仍是旧界面。
+    return FileResponse(
+        STATIC_DIR / "index.html",
+        headers={"Cache-Control": "no-cache, no-store, must-revalidate", "Pragma": "no-cache", "Expires": "0"},
+    )
 
 
 @app.get("/api/health")

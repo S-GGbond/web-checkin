@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "web-checkin"
-version = "1.1.0"
+version = "1.1.1"
 description = "WorkBuddy / Trae / Qoder 多账号签到与用量查询的本地 Web 中枢"
 readme = "README.md"
 requires-python = ">=3.11"

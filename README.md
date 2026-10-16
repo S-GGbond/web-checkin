@@ -142,7 +142,7 @@ python -m web_checkin
 - macOS：`~/Library/Application Support/web-checkin`
 - Windows：`%LOCALAPPDATA%\web-checkin`
 
-兼容旧用法：如果应用数据目录里还没有 `checkin-hub.sqlite3` / `trae-identity.json`，而当前工作目录存在同名旧文件，会继续复用旧文件，方便从仓库目录直接运行平滑迁移。
+兼容旧用法：如果应用数据目录里还没有 `checkin-hub.sqlite3` / `trae-identity.json`，而当前工作目录存在同名旧文件，会一次性迁移到应用数据目录（旧文件保留作备份）。如果应用数据目录里的账号库是空的、而工作目录的旧库仍有数据，启动时会自动回迁，避免"数据丢了"的情况。
 
 Qoder 登录脚本已内置在项目内。服务启动时会尝试从 `QODER_DATA_DIR/qoder_auth.json` 导入既有登录态；目录不存在或还没有登录态时，不影响 WorkBuddy / Trae 启动。
 
