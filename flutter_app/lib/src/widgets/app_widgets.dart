@@ -51,12 +51,20 @@ class SurfaceCard extends StatelessWidget {
     this.padding = const EdgeInsets.all(AppTokens.space4),
     this.onTap,
     this.highlight = false,
+    this.borderColor,
+    this.borderWidth = 1,
   });
 
   final Widget child;
   final EdgeInsetsGeometry padding;
   final VoidCallback? onTap;
   final bool highlight;
+
+  /// 自定义描边颜色，默认使用主题的分隔线色。
+  final Color? borderColor;
+
+  /// 描边宽度；选中态可以用更粗的边框强调。
+  final double borderWidth;
 
   @override
   Widget build(BuildContext context) {
@@ -71,7 +79,7 @@ class SurfaceCard extends StatelessWidget {
           padding: padding,
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(AppTokens.radiusMd),
-            border: Border.all(color: palette.outline),
+            border: Border.all(color: borderColor ?? palette.outline, width: borderWidth),
           ),
           child: child,
         ),

@@ -5,7 +5,7 @@ import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:provider/provider.dart';
 
 import 'screens/accounts_screen.dart';
-import 'screens/activity_screen.dart';
+import 'screens/sessions_screen.dart';
 import 'screens/dashboard_screen.dart';
 import 'screens/settings_screen.dart';
 import 'state/app_state.dart';
@@ -90,7 +90,7 @@ class _HomeShellState extends State<HomeShell> with WidgetsBindingObserver {
   static const _destinations = <_Destination>[
     _Destination('概览', Icons.dashboard_rounded, Icons.dashboard_outlined),
     _Destination('账号', Icons.folder_copy_rounded, Icons.folder_copy_outlined),
-    _Destination('动态', Icons.history_rounded, Icons.history_outlined),
+    _Destination('会话', Icons.forum_rounded, Icons.forum_outlined),
     _Destination('设置', Icons.tune_rounded, Icons.tune_outlined),
   ];
 
@@ -120,7 +120,7 @@ class _HomeShellState extends State<HomeShell> with WidgetsBindingObserver {
       children: [
         DashboardScreen(onNavigate: (index) => setState(() => _index = index)),
         const AccountsScreen(),
-        const ActivityScreen(),
+        const SessionsScreen(),
         const SettingsScreen(),
       ],
     );

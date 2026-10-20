@@ -7,6 +7,7 @@ import '../theme/app_theme.dart';
 import '../widgets/account_actions.dart';
 import '../widgets/account_card.dart';
 import '../widgets/app_widgets.dart';
+import '../widgets/client_status_line.dart';
 import '../widgets/responsive.dart';
 
 /// 托管账号：按平台分组管理每个账号的签到、定时与启停。
@@ -23,7 +24,9 @@ class AccountsScreen extends StatelessWidget {
       children: [
         SectionTitle(
           title: '托管账号',
-          subtitle: '每个账号都有独立的每日签到时间，可在卡片上的「定时」中设置',
+          subtitle: state.desktopSwitchSupported
+              ? '每个账号有独立的每日签到时间；Trae / WorkBuddy 分组标题里可直接切换客户端登录态'
+              : '每个账号都有独立的每日签到时间，可在卡片上的「定时」中设置',
           trailing: WrapActions(
             children: [
               OutlinedButton.icon(
@@ -91,13 +94,35 @@ class _GroupHeader extends StatelessWidget {
     final palette = AppTokensScope.of(context);
     final count = state.accounts.where((a) => a.provider == provider).length;
     final color = provider == PlatformKind.trae ? palette.traeColor : palette.workbuddyColor;
-    return Row(
+    final info = state.desktopClient(provider);
+    // 客户端登录态与账号列表放在同一个分组里，只在本平台且该平台有账号时出现。
+    final showSwitcher = state.desktopSwitchSupported && count > 0;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Container(width: 8, height: 8, decoration: BoxDecoration(color: color, shape: BoxShape.circle)),
-        const SizedBox(width: AppTokens.space2),
-        Text(provider.label, style: Theme.of(context).textTheme.titleMedium),
-        const SizedBox(width: AppTokens.space2),
-        Text('$count', style: TextStyle(color: palette.textSecondary, fontSize: 12)),
+        Row(
+          children: [
+            Container(width: 8, height: 8, decoration: BoxDecoration(color: color, shape: BoxShape.circle)),
+            const SizedBox(width: AppTokens.space2),
+            Text(provider.label, style: Theme.of(context).textTheme.titleMedium),
+            const SizedBox(width: AppTokens.space2),
+            Text('$count', style: TextStyle(color: palette.textSecondary, fontSize: 12)),
+            if (showSwitcher) ...[
+              const Spacer(),
+              StatusPill(
+                label: info?.summary ?? '检测中',
+                color: (info?.canSwitch ?? false) ? palette.success : palette.textSecondary,
+                icon: (info?.canSwitch ?? false) ? Icons.link_rounded : Icons.link_off_rounded,
+              ),
+            ],
+          ],
+        ),
+        if (showSwitcher)
+          Padding(
+            padding: const EdgeInsets.only(left: AppTokens.space4, top: AppTokens.space2),
+            child: ClientStatusLine(provider: provider),
+          ),
       ],
     );
   }
@@ -113,6 +138,7 @@ class _GroupBody extends StatelessWidget {
     final state = context.watch<AppState>();
     final palette = AppTokensScope.of(context);
     final accounts = state.accounts.where((a) => a.provider == provider).toList();
+    final canSwitchClient = state.desktopSwitchSupported && (state.desktopClient(provider)?.canSwitch ?? false);
     if (accounts.isEmpty) {
       return SurfaceCard(
         child: Row(
@@ -144,6 +170,10 @@ class _GroupBody extends StatelessWidget {
             onSchedule: () => AccountActions.schedule(context, account),
             onToggleEnabled: (value) => AccountActions.toggleEnabled(context, account, value),
             onDelete: () => AccountActions.delete(context, account),
+            onSwitchDesktop: canSwitchClient
+                ? () => AccountActions.switchDesktop(context, account)
+                : null,
+            desktopActive: state.isDesktopActive(account),
           ),
       ],
     );

@@ -16,6 +16,8 @@ class AccountCard extends StatelessWidget {
     required this.onSchedule,
     required this.onToggleEnabled,
     required this.onDelete,
+    this.onSwitchDesktop,
+    this.desktopActive = false,
   });
 
   final Account account;
@@ -25,6 +27,12 @@ class AccountCard extends StatelessWidget {
   final VoidCallback onSchedule;
   final ValueChanged<bool> onToggleEnabled;
   final VoidCallback onDelete;
+
+  /// 桌面端才有：把该账号的登录态写回本机客户端。移动端传 null，入口不渲染。
+  final VoidCallback? onSwitchDesktop;
+
+  /// 客户端当前是否登录的就是这个账号。
+  final bool desktopActive;
 
   @override
   Widget build(BuildContext context) {
@@ -44,9 +52,15 @@ class AccountCard extends StatelessWidget {
                 ? StatusPill(label: '上次失败', color: palette.danger, icon: Icons.error_outline_rounded)
                 : StatusPill(label: '待签到', color: palette.warning, icon: Icons.schedule_rounded);
 
-    return SurfaceCard(
+    final switchable = onSwitchDesktop != null && !desktopActive && !busy;
+
+    final card = SurfaceCard(
       padding: const EdgeInsets.all(AppTokens.space4),
-      highlight: checkedIn && account.enabled,
+      highlight: desktopActive || (checkedIn && account.enabled),
+      onTap: switchable ? onSwitchDesktop : null,
+      // 客户端当前登录的账号用绿色边框标出来，一眼能看出「现在用的是哪个」。
+      borderColor: desktopActive ? palette.success : null,
+      borderWidth: desktopActive ? 1.6 : 1,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -68,6 +82,14 @@ class AccountCard extends StatelessWidget {
                               style: TextStyle(color: palette.textSecondary, fontSize: 12),
                               overflow: TextOverflow.ellipsis,
                             ),
+                          ),
+                        ],
+                        if (desktopActive) ...[
+                          const SizedBox(width: AppTokens.space2),
+                          StatusPill(
+                            label: '客户端',
+                            color: palette.success,
+                            icon: Icons.desktop_windows_rounded,
                           ),
                         ],
                       ],
@@ -168,6 +190,8 @@ class AccountCard extends StatelessWidget {
                 color: palette.surfaceElevated,
                 onSelected: (value) {
                   switch (value) {
+                    case 'switch':
+                      onSwitchDesktop?.call();
                     case 'toggle':
                       onToggleEnabled(!account.enabled);
                     case 'delete':
@@ -175,6 +199,24 @@ class AccountCard extends StatelessWidget {
                   }
                 },
                 itemBuilder: (context) => [
+                  if (onSwitchDesktop != null)
+                    PopupMenuItem(
+                      value: 'switch',
+                      enabled: !desktopActive,
+                      child: Row(
+                        children: [
+                          Icon(
+                            desktopActive
+                                ? Icons.check_circle_outline_rounded
+                                : Icons.desktop_windows_rounded,
+                            size: 16,
+                            color: desktopActive ? palette.success : palette.textSecondary,
+                          ),
+                          const SizedBox(width: AppTokens.space2),
+                          Text(desktopActive ? '客户端当前账号' : '切换到客户端'),
+                        ],
+                      ),
+                    ),
                   PopupMenuItem(
                     value: 'toggle',
                     child: Text(account.enabled ? '停用账号' : '启用账号'),
@@ -189,6 +231,13 @@ class AccountCard extends StatelessWidget {
           ),
         ],
       ),
+    );
+
+    if (!switchable) return card;
+    return Tooltip(
+      message: '点击切换到「${account.title}」，会重启 ${account.provider.label} 客户端',
+      waitDuration: const Duration(milliseconds: 600),
+      child: card,
     );
   }
 

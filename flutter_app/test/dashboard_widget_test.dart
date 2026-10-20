@@ -43,7 +43,8 @@ void main() {
     }
 
     final state = AppState();
-    await state.init(database: db, startScheduler: false, refreshOnStart: false, syncBackground: false);
+    await state.init(database: db, startScheduler: false, refreshOnStart: false, syncBackground: false,
+        importDesktopAccounts: false);
     await state.reload();
     return state;
   }
@@ -132,7 +133,7 @@ void main() {
     expect(find.text('添加账号'), findsWidgets);
   });
 
-  testWidgets('可切换到动态页并按平台筛选', (tester) async {
+  testWidgets('可切换到会话页', (tester) async {
     tester.view.physicalSize = const Size(1440, 960);
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.reset);
@@ -141,17 +142,48 @@ void main() {
     await tester.pumpWidget(wrap(state));
     await tester.pumpAndSettle();
 
-    await tester.tap(find.text('动态'));
+    await tester.tap(find.text('会话'));
     await tester.pumpAndSettle();
 
-    expect(find.text('执行动态'), findsOneWidget);
-    expect(find.text('签到成功'), findsWidgets);
-    expect(find.text('登录态已过期'), findsWidgets);
+    expect(find.text('执行动态'), findsNothing);
+    expect(find.text('会话'), findsWidgets);
+    expect(find.text('刷新'), findsWidgets);
+  });
 
-    await tester.tap(find.text('仅失败'));
+  testWidgets('窄窗口会话页布局不溢出', (tester) async {
+    tester.view.physicalSize = const Size(400, 860);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    final state = (await tester.runAsync(buildState))!;
+    await tester.pumpWidget(wrap(state));
     await tester.pumpAndSettle();
 
-    expect(find.text('登录态已过期'), findsWidgets);
-    expect(find.text('签到成功'), findsNothing);
+    await tester.tap(find.text('会话').first);
+    await tester.pumpAndSettle();
+
+    expect(find.text('会话'), findsWidgets);
+    expect(find.text('刷新'), findsWidgets);
+    expect(find.text('迁移到其他账号…'), findsWidgets);
+  });
+
+  testWidgets('账号页在平台分组里展示客户端切换入口', (tester) async {
+    // 用窄一些的桌面宽度，顺带压测分组标题里的切换条是否溢出。
+    tester.view.physicalSize = const Size(940, 800);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    final state = (await tester.runAsync(buildState))!;
+    await tester.pumpWidget(wrap(state));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('账号'));
+    await tester.pumpAndSettle();
+
+    // 切换入口跟在 WorkBuddy / Trae 分组标题里，不再单独占一块面板。
+    expect(find.text('客户端登录态'), findsNothing);
+    expect(find.text('我的 WorkBuddy'), findsWidgets);
+    // 切换改成点卡片，不再有下拉框。
+    expect(find.byType(DropdownButton<int>), findsNothing);
   });
 }

@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:path/path.dart' as p;
 
 import '../../background_entry.dart';
+import '../../util/app_paths.dart';
 import 'background_scheduler.dart';
 import 'schedule_manifest.dart';
 
@@ -137,7 +138,7 @@ abstract class DesktopScheduler implements BackgroundScheduler {
   }
 }
 
-String _home() => Platform.environment['HOME'] ?? Platform.environment['USERPROFILE'] ?? '';
+String _home() => AppPaths.home;
 
 /// Linux：systemd 用户定时器。
 class SystemdScheduler extends DesktopScheduler {

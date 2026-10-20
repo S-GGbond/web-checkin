@@ -157,7 +157,8 @@ void main() {
     test('AppState 用真实文件库完成初始化', () async {
       final state = AppState();
       addTearDown(state.dispose);
-      await state.init(startScheduler: false, refreshOnStart: false, syncBackground: false);
+      await state.init(startScheduler: false, refreshOnStart: false, syncBackground: false,
+        importDesktopAccounts: false);
 
       expect(state.fatalError, isNull);
       expect(state.initialized, isTrue);

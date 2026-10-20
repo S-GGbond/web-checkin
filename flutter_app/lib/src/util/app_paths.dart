@@ -7,6 +7,19 @@ import 'package:path_provider/path_provider.dart';
 class AppPaths {
   AppPaths._();
 
+  /// 跨平台用户主目录：Linux / macOS 用 `HOME`，Windows 用 `USERPROFILE`
+  /// （Windows 上 `HOME` 一般不存在）。两者都取不到时退回临时目录，
+  /// 保证永远返回绝对路径，不会退化成相对路径。
+  static String get home {
+    for (final value in [
+      Platform.environment['HOME'],
+      Platform.environment['USERPROFILE'],
+    ]) {
+      if (value != null && value.isNotEmpty) return value;
+    }
+    return Directory.systemTemp.path;
+  }
+
   static Future<Directory> dataDir() async {
     final override = Platform.environment['WEB_CHECKIN_HOME'];
     if (override != null && override.isNotEmpty) {

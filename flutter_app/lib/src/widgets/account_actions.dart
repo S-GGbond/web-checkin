@@ -66,6 +66,21 @@ class AccountActions {
     showAppSnackBar(context, '已删除 ${account.title}');
   }
 
+  /// 桌面端：把该账号的登录态写回本机客户端，并重启客户端。
+  ///
+  /// 点击即执行（不再二次确认）；客户端会被强制退出，写入前自动备份。
+  /// 移动端不会走到这里（调用方按平台隐藏入口）。
+  static Future<void> switchDesktop(BuildContext context, Account account) async {
+    final state = context.read<AppState>();
+    if (state.isDesktopActive(account)) {
+      showAppSnackBar(context, '${account.provider.label} 客户端当前已是 ${account.title}');
+      return;
+    }
+    final result = await state.switchDesktopAccount(account.id);
+    if (!context.mounted) return;
+    showAppSnackBar(context, result.message, error: !result.ok);
+  }
+
   static Future<void> startLogin(BuildContext context, PlatformKind provider) async {
     final state = context.read<AppState>();
     final messenger = ScaffoldMessenger.of(context);

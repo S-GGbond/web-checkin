@@ -8,6 +8,7 @@ import '../../data/app_database.dart';
 import '../../models/account.dart';
 import '../../models/login_session.dart';
 import '../../util/app_paths.dart';
+import '../desktop/desktop_client.dart';
 import '../http_json.dart';
 import 'trae_crypto.dart';
 
@@ -31,6 +32,8 @@ class TraeService {
   Map<String, dynamic>? _identityCache;
   String? _versionCache;
 
+  static String get _home => AppPaths.home;
+
   // ---------------------------------------------------------------------------
   // 设备指纹
   // ---------------------------------------------------------------------------
@@ -38,7 +41,7 @@ class TraeService {
   Future<Map<String, dynamic>> _identity() async {
     if (_identityCache != null) return _identityCache!;
     final file = await AppPaths.traeIdentityFile();
-    for (final candidate in [file, File('${Platform.environment['HOME'] ?? ''}/.trae-checkin/identity.json')]) {
+    for (final candidate in [file, File('$_home/.trae-checkin/identity.json')]) {
       try {
         if (await candidate.exists()) {
           final decoded = jsonDecode(await candidate.readAsString());
@@ -120,10 +123,17 @@ class TraeService {
 
   Future<String> _clientVersion() async {
     if (_versionCache != null) return _versionCache!;
+    final localAppData = Platform.environment['LOCALAPPDATA'] ?? '';
+    final programFiles = Platform.environment['PROGRAMFILES'] ?? '';
+    final programFilesX86 = Platform.environment['PROGRAMFILES(X86)'] ?? '';
     final candidates = [
       '/usr/share/trae-cn/resources/app/package.json',
       '/usr/share/trae/resources/app/package.json',
-      '${Platform.environment['HOME'] ?? ''}/Library/Application Support/Trae CN/User/globalStorage/storage.json',
+      '$_home/Library/Application Support/Trae CN/User/globalStorage/storage.json',
+      // Windows：覆盖常见的三处安装位置（用户级安装 + 两个 Program Files）。
+      '$localAppData/Programs/Trae CN/resources/app/package.json',
+      '$programFiles/Trae CN/resources/app/package.json',
+      '$programFilesX86/Trae CN/resources/app/package.json',
     ];
     for (final path in candidates) {
       try {
@@ -412,6 +422,14 @@ class TraeService {
     final aiRegion = (_pick(userInfo, ['AIRegion', 'aiRegion']) ?? info['AIRegion'] ?? 'CN').toString();
 
     String str(Object? value) => value?.toString() ?? '';
+    // 客户端用 `account.scope` 判断是否已登录（为空直接当未登录），
+    // 但 GetUserInfo 对部分账号不返回 Scope / LoginScope / StoreRegion，
+    // 这里补齐成客户端自己写登录态时的默认值，避免存下的登录态客户端不认。
+    String strOr(Object? value, String fallback) {
+      final text = str(value);
+      return text.isEmpty ? fallback : text;
+    }
+
     return {
       'token': token,
       'refreshToken': refreshToken,
@@ -430,13 +448,13 @@ class TraeService {
         'email': str(_pick(userInfo, ['NonPlainTextEmail', 'email'])),
         'avatar_url': str(_pick(userInfo, ['AvatarUrl', 'avatar_url'])),
         'description': str(_pick(userInfo, ['Description', 'description'])),
-        'scope': str(_pick(userInfo, ['Scope', 'scope'])),
-        'loginScope': str(_pick(userInfo, ['LoginScope', 'loginScope'])),
+        'scope': strOr(_pick(userInfo, ['Scope', 'scope']), 'marscode'),
+        'loginScope': strOr(_pick(userInfo, ['LoginScope', 'loginScope']), 'trae'),
         'nonPlainTextMobile': str(userInfo['NonPlainTextMobile']),
         'storeCountryCode': str(userInfo['StoreCountryCode']),
         'storeCountrySrc': str(userInfo['StoreCountrySrc']),
-        'storeRegion': str(_pick(info, ['StoreRegion', 'storeRegion'])),
-        'userTag': str(_pick(info, ['UserTag', 'userTag'])),
+        'storeRegion': strOr(_pick(info, ['StoreRegion', 'storeRegion']), aiRegion),
+        'userTag': strOr(_pick(info, ['UserTag', 'userTag']), 'cn'),
         'migrateToSG': userInfo['MigrateToSG'] == true,
       },
     };
@@ -685,40 +703,45 @@ class TraeService {
   // ---------------------------------------------------------------------------
 
   Future<List<int>> importFromDesktop() async {
-    final home = Platform.environment['HOME'] ?? '';
-    final roots = [
-      Directory('$home/.config'),
-      Directory('$home/Library/Application Support'),
-    ];
+    // 三个桌面平台的登录态位置：Linux `~/.config`、macOS `~/Library/Application Support`、
+    // Windows 的 `%APPDATA%` / `%LOCALAPPDATA%`（最后一组由 DesktopClient 探测）。
     const names = ['Trae CN', 'TRAE SOLO CN', 'Trae', 'TRAE SOLO'];
+    final paths = <String>[];
+    for (final name in names) {
+      for (final base in ['$_home/.config', '$_home/Library/Application Support']) {
+        paths.add('$base/$name/User/globalStorage/storage.json');
+      }
+    }
+    paths.addAll(DesktopClient.traeAuthFiles());
+
     final imported = <int>[];
-    for (final root in roots) {
-      for (final name in names) {
-        final file = File('${root.path}/$name/User/globalStorage/storage.json');
-        try {
-          if (!await file.exists()) continue;
-          final storage = jsonDecode(await file.readAsString());
-          if (storage is! Map) continue;
-          final raw = storage[desktopAuthKey];
-          if (raw == null) continue;
-          final Map<String, dynamic> auth;
-          final text = raw.toString();
-          if (text.trimLeft().startsWith('{')) {
-            auth = (jsonDecode(text) as Map).cast<String, dynamic>();
-          } else {
-            auth = TraeCrypto.decrypt(text);
-          }
-          final displayName = (auth['account'] as Map?)?['username']?.toString() ?? auth['userId'].toString();
-          imported.add(await _db.upsertAccount(
-            provider: PlatformKind.trae,
-            externalId: auth['userId'].toString(),
-            displayName: displayName,
-            endpoint: (auth['host'] ?? apiHost).toString(),
-            credential: TraeCrypto.encrypt(auth),
-          ));
-        } catch (_) {
-          continue;
+    final seen = <String>{};
+    for (final path in paths) {
+      if (!seen.add(path)) continue;
+      final file = File(path);
+      try {
+        if (!await file.exists()) continue;
+        final storage = jsonDecode(await file.readAsString());
+        if (storage is! Map) continue;
+        final raw = storage[desktopAuthKey];
+        if (raw == null) continue;
+        final Map<String, dynamic> auth;
+        final text = raw.toString();
+        if (text.trimLeft().startsWith('{')) {
+          auth = (jsonDecode(text) as Map).cast<String, dynamic>();
+        } else {
+          auth = TraeCrypto.decrypt(text);
         }
+        final displayName = (auth['account'] as Map?)?['username']?.toString() ?? auth['userId'].toString();
+        imported.add(await _db.upsertAccount(
+          provider: PlatformKind.trae,
+          externalId: auth['userId'].toString(),
+          displayName: displayName,
+          endpoint: (auth['host'] ?? apiHost).toString(),
+          credential: TraeCrypto.encrypt(auth),
+        ));
+      } catch (_) {
+        continue;
       }
     }
     return imported;

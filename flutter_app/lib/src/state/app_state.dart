@@ -12,7 +12,9 @@ import '../background_entry.dart';
 import '../services/background/android_permissions.dart';
 import '../services/background/background_scheduler.dart';
 import '../services/background/scheduler_factory.dart';
+import '../services/account_export.dart';
 import '../services/checkin_runner.dart';
+import '../services/desktop/desktop_switch_service.dart';
 import '../services/http_json.dart';
 import '../services/scheduler.dart';
 
@@ -25,6 +27,30 @@ class AppState extends ChangeNotifier {
   /// 系统级后台定时（systemd / launchd / schtasks / WorkManager）。
   late final BackgroundScheduler background;
   bool backgroundSyncing = false;
+
+  /// 桌面客户端登录态切换。移动端不支持，界面上不会出现入口。
+  final DesktopSwitchService desktopSwitch = DesktopSwitchService();
+
+  /// 各平台客户端的探测结果（含当前登录的账号 id）。
+  final Map<PlatformKind, DesktopClientInfo> desktopClients = {};
+
+  bool get desktopSwitchSupported => DesktopSwitchService.supported;
+
+  DesktopClientInfo? desktopClient(PlatformKind provider) => desktopClients[provider];
+
+  /// 客户端当前登录的账号 id；未安装或未登录时为 null。
+  String? desktopActiveId(PlatformKind provider) => desktopClients[provider]?.activeExternalId;
+
+  bool isDesktopActive(Account account) => desktopActiveId(account.provider) == account.externalId;
+
+  /// 切换进行中的阶段提示（例如「正在关闭 Trae 客户端…」）。
+  String? _desktopSwitchPhase;
+  PlatformKind? _desktopSwitchingProvider;
+
+  String? desktopPhase(PlatformKind provider) =>
+      _desktopSwitchingProvider == provider ? _desktopSwitchPhase : null;
+
+  bool get desktopSwitching => _desktopSwitchingProvider != null;
 
   BackgroundSchedulerStatus get backgroundStatus => background.status;
 
@@ -63,6 +89,7 @@ class AppState extends ChangeNotifier {
     bool startScheduler = true,
     bool refreshOnStart = true,
     bool syncBackground = true,
+    bool importDesktopAccounts = true,
   }) async {
     if (initialized) return;
     try {
@@ -78,12 +105,28 @@ class AppState extends ChangeNotifier {
         unawaited(syncBackgroundSchedule());
         unawaited(refreshExactAlarmPermission());
       }
+      if (desktopSwitchSupported) {
+        await refreshDesktopClients(importAccounts: importDesktopAccounts);
+      }
       if (refreshOnStart) unawaited(refreshAll());
     } catch (error) {
       fatalError = error.toString();
     } finally {
       notifyListeners();
     }
+  }
+
+  /// 导出全部账号（含登录态）为 JSON；[outputPath] 不传则写到用户主目录。
+  Future<AccountExportResult> exportAccounts({String? outputPath}) async {
+    final rows = await db.listAccountRows();
+    return AccountExporter.exportJson(rows: rows, outputPath: outputPath);
+  }
+
+  /// 从导出的 JSON 恢复账号（同 provider + 账号 id 覆盖登录态）。
+  Future<AccountImportResult> importAccounts({required String path}) async {
+    final result = await AccountExporter.importJson(path: path, db: db);
+    await reload();
+    return result;
   }
 
   Future<void> _reload() async {
@@ -266,6 +309,112 @@ class AppState extends ChangeNotifier {
     await db.deleteAccount(accountId);
     await reload();
     await syncBackgroundSchedule();
+  }
+
+  // ---------------------------------------------------------------------------
+  // 桌面客户端登录态切换（仅 Windows / Linux / macOS）
+  // ---------------------------------------------------------------------------
+
+  /// 重新探测本机客户端的位置与当前登录账号。
+  ///
+  /// [refreshExecutable] 仅在用户主动「重新探测」时为真（会重新搜索安装目录）；
+  /// [importAccounts] 为真时，把客户端里**当前登录**、但账号库还没有的账号自动收进来。
+  Future<void> refreshDesktopClients({bool importAccounts = true, bool refreshExecutable = false}) async {
+    if (!desktopSwitchSupported) return;
+    for (final provider in PlatformKind.values) {
+      desktopClients[provider] = await desktopSwitch.inspect(
+        provider,
+        refreshExecutable: refreshExecutable,
+      );
+    }
+    if (importAccounts) await _importDesktopAccounts();
+    notifyListeners();
+  }
+
+  Future<void> _importDesktopAccounts() async {
+    if (!initialized) return;
+    final rows = await db.listAccountRows();
+    final known = <String>{for (final row in rows) '${row['provider']}:${row['external_id']}'};
+    var imported = 0;
+    for (final provider in PlatformKind.values) {
+      final draft = await desktopSwitch.readCurrentAccount(provider);
+      if (draft == null || known.contains(draft.key)) continue;
+      final id = await db.upsertAccount(
+        provider: draft.provider,
+        externalId: draft.externalId,
+        displayName: draft.displayName,
+        endpoint: draft.endpoint,
+        credential: draft.credential,
+      );
+      await db.addLog(
+        id,
+        draft.provider,
+        action: 'import',
+        ok: true,
+        message: '从本机客户端自动检测到该账号',
+      );
+      known.add(draft.key);
+      imported++;
+    }
+    if (imported > 0) await _reload();
+  }
+
+  /// 把某个账号的登录态写回桌面客户端，随后自动重启客户端。
+  ///
+  /// 移动端没有桌面客户端可操作，直接拒绝（界面上入口也不会渲染）。
+  Future<DesktopSwitchResult> switchDesktopAccount(int accountId) async {
+    if (!desktopSwitchSupported) {
+      return const DesktopSwitchResult(ok: false, message: '手机端无法切换桌面客户端登录态');
+    }
+    final row = await db.getAccountRow(accountId);
+    if (row == null) return const DesktopSwitchResult(ok: false, message: '账号不存在');
+    final provider = PlatformKind.fromId(row['provider'] as String);
+
+    _setBusy(accountId, true);
+    _desktopSwitchingProvider = provider;
+    _desktopSwitchPhase = '正在关闭 ${provider.label} 客户端…';
+    notifyListeners();
+    try {
+      final result = await desktopSwitch.switchTo(
+        provider: provider,
+        credential: row['credential'] as String,
+        displayName: (row['display_name'] as String?) ?? '',
+        onPhase: (phase) {
+          _desktopSwitchPhase = phase;
+          notifyListeners();
+        },
+      );
+      await db.addLog(
+        accountId,
+        provider,
+        action: 'switch',
+        ok: result.ok,
+        message: result.message,
+      );
+      await reload(notify: false);
+      // 切换成功时客户端当前账号就是我们刚写进去的那个，直接更新状态；
+      // 不再重跑探测 + 自动导入，避免切完还要多等一轮文件/目录扫描。
+      if (result.ok) {
+        final current = desktopClients[provider];
+        desktopClients[provider] = DesktopClientInfo(
+          provider: provider,
+          authFiles: current?.authFiles ?? const [],
+          executable: current?.executable,
+          activeExternalId: row['external_id'] as String?,
+        );
+      }
+      return result;
+    } catch (error) {
+      final result = DesktopSwitchResult(ok: false, message: _message(error));
+      await db.addLog(accountId, provider, action: 'switch', ok: false, message: result.message);
+      await reload();
+      return result;
+    } finally {
+      _setBusy(accountId, false);
+      _desktopSwitchingProvider = null;
+      _desktopSwitchPhase = null;
+      notifyListeners();
+    }
   }
 
   // ---------------------------------------------------------------------------

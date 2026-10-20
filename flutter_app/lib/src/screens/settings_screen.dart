@@ -3,10 +3,11 @@ import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 import '../models/account.dart';
+import '../services/account_export.dart';
 import '../services/background/background_scheduler.dart';
+import '../services/desktop/desktop_switch_service.dart';
 import '../state/app_state.dart';
 import '../theme/app_theme.dart';
-import '../widgets/account_actions.dart';
 import '../widgets/app_widgets.dart';
 import '../widgets/responsive.dart';
 
@@ -58,6 +59,121 @@ class SettingsScreen extends StatelessWidget {
               ),
             ),
             const SizedBox(height: AppTokens.space4),
+            _ActionRow(
+              icon: Icons.file_upload_outlined,
+              title: '导出账号（JSON）',
+              subtitle: 'WorkBuddy / Trae 的账号与登录态，明文保存，请妥善保管',
+              trailing: OutlinedButton(
+                onPressed: () async {
+                  try {
+                    final result = await state.exportAccounts();
+                    if (!context.mounted) return;
+                    await showDialog<void>(
+                      context: context,
+                      builder: (context) => AlertDialog(
+                        title: const Text('账号已导出'),
+                        content: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              '${result.count} 个账号 · '
+                              '${(result.sizeBytes / 1024).toStringAsFixed(0)} KB',
+                            ),
+                            const SizedBox(height: AppTokens.space2),
+                            SelectableText(
+                              result.path,
+                              style: const TextStyle(
+                                fontSize: 11,
+                                fontFamily: 'monospace',
+                              ),
+                            ),
+                            const SizedBox(height: AppTokens.space3),
+                            const Text(
+                              '文件包含明文登录态，请勿上传或分享给他人。',
+                              style: TextStyle(fontSize: 12),
+                            ),
+                          ],
+                        ),
+                        actions: [
+                          TextButton(
+                            onPressed: () async {
+                              await Clipboard.setData(
+                                ClipboardData(text: result.path),
+                              );
+                              if (context.mounted) {
+                                showAppSnackBar(context, '路径已复制');
+                              }
+                            },
+                            child: const Text('复制路径'),
+                          ),
+                          FilledButton(
+                            onPressed: () => Navigator.pop(context),
+                            child: const Text('知道了'),
+                          ),
+                        ],
+                      ),
+                    );
+                  } catch (error) {
+                    if (context.mounted) {
+                      showAppSnackBar(context, '导出失败：$error', error: true);
+                    }
+                  }
+                },
+                child: const Text('导出'),
+              ),
+            ),
+            _ActionRow(
+              icon: Icons.file_download_outlined,
+              title: '导入账号（JSON）',
+              subtitle: '从 checkin-accounts-*.json 恢复账号与登录态，同 id 覆盖',
+              trailing: OutlinedButton(
+                onPressed: () async {
+                  final path = await showDialog<String>(
+                    context: context,
+                    builder: (context) => const _PathDialog(
+                      title: '导入账号（JSON）',
+                      hint: '/home/user/checkin-accounts-20261020.json',
+                      note: '同 provider + 账号 id 的账号会覆盖登录态；不会删除现有账号。',
+                    ),
+                  );
+                  if (path == null || !context.mounted) return;
+                  try {
+                    final result = await state.importAccounts(path: path);
+                    if (!context.mounted) return;
+                    final detail = result.problems.isEmpty
+                        ? ''
+                        : '\n${result.problems.take(5).join('\n')}';
+                    await showDialog<void>(
+                      context: context,
+                      builder: (context) => AlertDialog(
+                        title: const Text('导入完成'),
+                        content: Text(
+                          '新增 ${result.added} 个，更新 ${result.updated} 个，'
+                          '跳过 ${result.skipped} 个$detail',
+                        ),
+                        actions: [
+                          FilledButton(
+                            onPressed: () => Navigator.pop(context),
+                            child: const Text('关闭'),
+                          ),
+                        ],
+                      ),
+                    );
+                  } on AccountImportException catch (error) {
+                    if (context.mounted) {
+                      showAppSnackBar(context, error.message, error: true);
+                    }
+                  } catch (error) {
+                    if (context.mounted) {
+                      showAppSnackBar(context, '导入失败：$error', error: true);
+                    }
+                  }
+                },
+                child: const Text('导入'),
+              ),
+            ),
+            const SizedBox(height: AppTokens.space4),
             _InfoLine(
               icon: Icons.lock_outline_rounded,
               text: 'Trae 登录态以 AES-128-CBC + SHA-512 容器加密存放；WorkBuddy 登录态按平台要求明文存放，请勿拷贝该数据库。',
@@ -70,43 +186,10 @@ class SettingsScreen extends StatelessWidget {
           ],
         ),
         const SizedBox(height: AppTokens.space4),
-        _SettingsCard(
-          title: '维护',
-          children: [
-            _ActionRow(
-              icon: Icons.sync_rounded,
-              title: '刷新全部账号状态',
-              subtitle: '重新拉取余额与签到状态',
-              trailing: OutlinedButton(
-                onPressed: state.refreshing ? null : () => AccountActions.refreshAll(context),
-                child: Text(state.refreshing ? '刷新中' : '刷新'),
-              ),
-            ),
-            _ActionRow(
-              icon: Icons.done_all_rounded,
-              title: '全部账号立即签到',
-              subtitle: '对所有启用账号执行一次签到',
-              trailing: OutlinedButton(
-                onPressed: () => AccountActions.checkinAll(context),
-                child: const Text('签到'),
-              ),
-            ),
-            _ActionRow(
-              icon: Icons.download_rounded,
-              title: '从本机 Trae 客户端导入',
-              subtitle: '读取本机 Trae 的登录态，免扫码登录',
-              trailing: OutlinedButton(
-                onPressed: () async {
-                  final error = await state.importTraeFromDesktop();
-                  if (!context.mounted) return;
-                  showAppSnackBar(context, error ?? '已导入本机 Trae 登录态', error: error != null);
-                },
-                child: const Text('导入'),
-              ),
-            ),
-          ],
-        ),
-        const SizedBox(height: AppTokens.space4),
+        if (state.desktopSwitchSupported) ...[
+          _DesktopSwitchCard(state: state),
+          const SizedBox(height: AppTokens.space4),
+        ],
         _BackgroundScheduleCard(state: state),
         const SizedBox(height: AppTokens.space4),
         _SettingsCard(
@@ -221,6 +304,116 @@ class _InfoLine extends StatelessWidget {
           ),
         ],
       ),
+    );
+  }
+}
+
+/// 桌面客户端账号切换：展示探测到的登录态、主程序与当前账号。
+///
+/// 只在桌面平台渲染；移动端由调用方整块隐藏。
+class _DesktopSwitchCard extends StatelessWidget {
+  const _DesktopSwitchCard({required this.state});
+
+  final AppState state;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = AppTokensScope.of(context);
+    final byExternalId = {
+      for (final account in state.accounts) '${account.provider.id}:${account.externalId}': account.title,
+    };
+
+    return SurfaceCard(
+      padding: const EdgeInsets.all(AppTokens.space5),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Text('客户端探测', style: Theme.of(context).textTheme.titleMedium),
+              const Spacer(),
+              OutlinedButton(
+                onPressed: () => state.refreshDesktopClients(refreshExecutable: true),
+                child: const Text('重新探测'),
+              ),
+            ],
+          ),
+          const SizedBox(height: AppTokens.space2),
+          Text(
+            '客户端当前登录的账号会在启动或「重新探测」时自动加入账号库；切换入口在「账号」页的 Trae / WorkBuddy 分组里。',
+            style: TextStyle(color: palette.textSecondary, fontSize: 12, height: 1.5),
+          ),
+          const SizedBox(height: AppTokens.space4),
+          for (final provider in PlatformKind.values) ...[
+            _ClientStatusBlock(
+              provider: provider,
+              info: state.desktopClient(provider),
+              activeName: state.desktopActiveId(provider) == null
+                  ? null
+                  : byExternalId['${provider.id}:${state.desktopActiveId(provider)}'],
+            ),
+            if (provider != PlatformKind.values.last) const SizedBox(height: AppTokens.space4),
+          ],
+          const SizedBox(height: AppTokens.space2),
+          _InfoLine(
+            icon: Icons.monitor_rounded,
+            text: '切换入口只在 Windows / Linux / macOS 显示；手机端无法控制桌面客户端，因此不提供。'
+                '每次写入前会先完全退出客户端并保留一份登录态备份。',
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ClientStatusBlock extends StatelessWidget {
+  const _ClientStatusBlock({required this.provider, required this.info, required this.activeName});
+
+  final PlatformKind provider;
+  final DesktopClientInfo? info;
+  final String? activeName;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = AppTokensScope.of(context);
+    final ready = info?.canSwitch ?? false;
+    final color = ready ? palette.success : palette.textSecondary;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            ProviderChip(provider: provider, dense: true),
+            const SizedBox(width: AppTokens.space2),
+            Expanded(
+              child: Text(
+                activeName == null ? '客户端未登录 / 未检测到' : '客户端当前：$activeName',
+                style: TextStyle(color: palette.textSecondary, fontSize: 12),
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+            StatusPill(
+              label: info?.summary ?? '未检测',
+              color: color,
+              icon: ready ? Icons.verified_rounded : Icons.link_off_rounded,
+            ),
+          ],
+        ),
+        const SizedBox(height: AppTokens.space2),
+        Text(
+          info?.authFile ?? '未找到登录态文件，请先启动客户端完成一次登录',
+          style: const TextStyle(fontSize: 11, fontFamily: 'monospace'),
+          maxLines: 2,
+          overflow: TextOverflow.ellipsis,
+        ),
+        const SizedBox(height: 2),
+        Text(
+          '主程序：${info?.executableName ?? '未找到'}',
+          style: TextStyle(color: palette.textSecondary, fontSize: 11),
+          overflow: TextOverflow.ellipsis,
+        ),
+      ],
     );
   }
 }
@@ -341,6 +534,77 @@ class _BackgroundScheduleCard extends StatelessWidget {
           ),
         ],
       ),
+    );
+  }
+}
+
+
+/// 让用户填一个本地文件路径。
+class _PathDialog extends StatefulWidget {
+  const _PathDialog({required this.title, required this.hint, this.note});
+
+  final String title;
+  final String hint;
+  final String? note;
+
+  @override
+  State<_PathDialog> createState() => _PathDialogState();
+}
+
+class _PathDialogState extends State<_PathDialog> {
+  final TextEditingController _controller = TextEditingController();
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = AppTokensScope.of(context);
+    return AlertDialog(
+      title: Text(widget.title),
+      content: SizedBox(
+        width: 460,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            TextField(
+              controller: _controller,
+              autofocus: true,
+              style: const TextStyle(fontSize: 12, fontFamily: 'monospace'),
+              decoration: InputDecoration(hintText: widget.hint, isDense: true),
+            ),
+            if (widget.note != null) ...[
+              const SizedBox(height: AppTokens.space2),
+              Text(
+                widget.note!,
+                style: TextStyle(
+                  fontSize: 11,
+                  color: palette.textSecondary,
+                  height: 1.5,
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('取消'),
+        ),
+        FilledButton(
+          onPressed: () {
+            final path = _controller.text.trim();
+            if (path.isEmpty) return;
+            Navigator.pop(context, path);
+          },
+          child: const Text('确定'),
+        ),
+      ],
     );
   }
 }
