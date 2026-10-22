@@ -46,3 +46,10 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
+
+# sqlite3 的预编译 DLL 默认从 GitHub Releases 下载，本机直连不通（CONNECT 被代理拒绝），
+# 改走镜像。钩子下载后会强制校验 SHA256（见 sqlite3 包 asset_hashes.dart），镜像无法篡改内容。
+hooks:
+  user_defines:
+    sqlite3:
+      url_pattern: "https://gh-proxy.com/https://github.com/simolus3/sqlite3.dart/releases/download/$RELEASE_TAG/$FILENAME"
