@@ -23,6 +23,19 @@ flutter build linux --release
 flutter build apk --release
 ```
 
+### Linux 安装包（deb / rpm）
+
+```bash
+tools/package/package.sh          # deb + rpm，产物在 dist/
+tools/package/package.sh deb      # 只要 deb（dpkg-deb，无需 root）
+tools/package/package.sh rpm      # 只要 rpm（docker + rockylinux:9 跑 rpmbuild）
+```
+
+安装布局：bundle 放在 `/opt/checkin_hub/`（二进制必须与 `data/`、`lib/` 同级），
+`/usr/bin/checkin_hub` 是指向它的软链接，另外装 `.desktop` 与 1024px 图标。
+后台定时的 systemd unit 用 `Platform.resolvedExecutable` 取真实路径，因此软链接不影响定时任务。
+rpm 由 rpmbuild 自动 strip 并生成 soname 依赖（xz payload，兼容 el8+）。
+
 ## 数据与目录
 
 账号库默认位于应用支持目录下的 `checkin-hub.sqlite3`，表结构与 Python 版一致
