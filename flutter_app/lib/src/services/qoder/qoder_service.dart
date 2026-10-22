@@ -580,6 +580,21 @@ class QoderService {
     }
     entries.sort((a, b) => b.time.compareTo(a.time));
     final total = _num(heat['total']).toInt();
+    // 网页明细拿不到、热力图又没有积分时，留一条说明：否则 Qoder 会整个从用量页消失。
+    if (entries.isEmpty) {
+      entries.add(
+        UsageEntry(
+          provider: PlatformKind.qoder,
+          accountId: row['id'] as int? ?? 0,
+          accountName: name,
+          time: DateTime.now(),
+          title: '未取到网页明细（网页登录态不可用），近 $days 天也没有积分消耗',
+          model: '',
+          credits: 0,
+          client: 'Qoder',
+        ),
+      );
+    }
     return UsageQueryResult(
       entries: entries,
       total: total == 0 ? entries.length : total,

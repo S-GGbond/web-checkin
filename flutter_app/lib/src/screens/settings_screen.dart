@@ -16,7 +16,6 @@ import 'schedules_screen.dart';
 import '../state/app_state.dart';
 import '../theme/app_theme.dart';
 import '../widgets/app_widgets.dart';
-import '../widgets/qoder_web_card.dart';
 import '../widgets/responsive.dart';
 
 /// 设置：数据位置、维护操作与关于信息。
@@ -127,10 +126,6 @@ class SettingsScreen extends StatelessWidget {
           ],
         ),
         const SizedBox(height: AppTokens.space4),
-        if (state.accounts.any((account) => account.provider == PlatformKind.qoder)) ...[
-          QoderWebCard(state: state),
-          const SizedBox(height: AppTokens.space4),
-        ],
         if (state.desktopSwitchSupported) ...[
           _DesktopSwitchCard(state: state),
           const SizedBox(height: AppTokens.space4),

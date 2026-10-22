@@ -68,27 +68,6 @@ class QoderWebSession {
   final bool fromBrowser;
 }
 
-/// 设置页展示用的状态快照。
-class QoderWebState {
-  const QoderWebState({
-    required this.source,
-    required this.userId,
-    required this.error,
-    required this.fromBrowser,
-    required this.available,
-    this.boundAccounts = 0,
-  });
-
-  final String source;
-  final String userId;
-  final String error;
-  final bool fromBrowser;
-  final bool available;
-
-  /// 已经绑定到账号的网页登录态数量。
-  final int boundAccounts;
-}
-
 /// 一次网页请求：URL + 请求头 → JSON（测试可替换）。
 typedef QoderWebRequest = Future<JsonResult> Function(
   String url,
@@ -127,7 +106,6 @@ class QoderWebUsage {
   static const userAgent =
       'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 '
       '(KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36';
-  static const manualKey = 'qoder_web_cookie';
   static const pageSize = 100;
   static const maxPages = 200;
 
@@ -141,24 +119,8 @@ class QoderWebUsage {
   // 登录态
   // ---------------------------------------------------------------------------
 
-  Future<String> manualCookie() async =>
-      (await _db.getSetting(manualKey))?.trim() ?? '';
-
-  Future<void> saveManualCookie(String cookie) =>
-      _db.setSetting(manualKey, cookie.trim());
-
-  Future<void> clearManualCookie() => _db.setSetting(manualKey, '');
-
-  /// 手动 Cookie 优先；桌面端其次复用浏览器登录态。
+  /// 当前浏览器里的 qoder.cn 登录态（没有绑定时兜底用）。
   Future<QoderWebSession?> session() async {
-    final manual = await manualCookie();
-    if (manual.isNotEmpty) {
-      return QoderWebSession(
-        cookie: manual,
-        source: '手动 Cookie',
-        fromBrowser: false,
-      );
-    }
     if (!browserSupported) return null;
     final cached = _browserCache;
     if (cached != null &&
@@ -177,105 +139,6 @@ class QoderWebUsage {
     } catch (_) {
       return null;
     }
-  }
-
-  /// 设置页用：给出当前登录态、归属账号与失败原因。
-  Future<QoderWebState> probe() async {
-    final bound = await boundAccountCount();
-    final manual = await manualCookie();
-
-    Future<QoderWebState> check(QoderWebSession session) async {
-      try {
-        final data = await summary(session.cookie);
-        return QoderWebState(
-          source: session.source,
-          userId: data.userId,
-          error: '',
-          fromBrowser: session.fromBrowser,
-          available: true,
-          boundAccounts: bound,
-        );
-      } on ApiException catch (failure) {
-        return QoderWebState(
-          source: session.source,
-          userId: '',
-          error: failure.message,
-          fromBrowser: session.fromBrowser,
-          available: bound > 0,
-          boundAccounts: bound,
-        );
-      }
-    }
-
-    if (manual.isNotEmpty) {
-      return check(
-        QoderWebSession(
-          cookie: manual,
-          source: '手动 Cookie',
-          fromBrowser: false,
-        ),
-      );
-    }
-    if (bound > 0 && !browserSupported) {
-      return QoderWebState(
-        source: '账号已绑定',
-        userId: '',
-        error: '',
-        fromBrowser: false,
-        available: true,
-        boundAccounts: bound,
-      );
-    }
-    if (!browserSupported) {
-      return QoderWebState(
-        source: '未配置',
-        userId: '',
-        error: '当前平台只能手动填写 Cookie',
-        fromBrowser: false,
-        available: false,
-        boundAccounts: bound,
-      );
-    }
-    try {
-      final browser = (await _loadBrowser()).first;
-      return check(
-        QoderWebSession(
-          cookie: browser.cookie,
-          source: '${browser.browser} 浏览器',
-          fromBrowser: true,
-        ),
-      );
-    } on QoderCookieException catch (failure) {
-      return QoderWebState(
-        source: bound > 0 ? '账号已绑定' : '未配置',
-        userId: '',
-        error: bound > 0 ? '' : failure.message,
-        fromBrowser: false,
-        available: bound > 0,
-        boundAccounts: bound,
-      );
-    } catch (failure) {
-      return QoderWebState(
-        source: bound > 0 ? '账号已绑定' : '未配置',
-        userId: '',
-        error: bound > 0 ? '' : failure.toString(),
-        fromBrowser: false,
-        available: bound > 0,
-        boundAccounts: bound,
-      );
-    }
-  }
-
-  /// 直接读一次浏览器登录态（设置页的「读取浏览器登录态」按钮）。
-  Future<QoderWebSession> readBrowser() async {
-    final browser = (await _loadBrowser()).first;
-    final session = QoderWebSession(
-      cookie: browser.cookie,
-      source: '${browser.browser} 浏览器',
-      fromBrowser: true,
-    );
-    _browserCache = (session: session, at: DateTime.now());
-    return session;
   }
 
 
@@ -528,8 +391,8 @@ class QoderWebUsage {
     final accountId = row['id'] as int? ?? 0;
     final externalId = (row['external_id'] ?? '').toString();
 
-    // 优先用「登录该账号时自动抓取并绑定」的 Cookie；没有绑定再用全局的手动 /
-    // 当前浏览器登录态（还要求归属一致）。
+    // 优先用「登录该账号时自动抓取并绑定」的 Cookie；没有绑定再看浏览器当前登录态，
+    // 归属对得上就顺手补绑（下次直接用，不必再扫浏览器）。
     final bound = await boundCookie(accountId);
     final cookie = bound.isNotEmpty ? bound : (await session())?.cookie ?? '';
     if (cookie.isEmpty) return null;
@@ -537,6 +400,9 @@ class QoderWebUsage {
       final uid = await userId(cookie);
       if (uid.isNotEmpty && externalId.isNotEmpty && uid != externalId) {
         return null;
+      }
+      if (bound.isEmpty && uid.isNotEmpty) {
+        await bindCookie(accountId, cookie, uid: uid);
       }
       final now = DateTime.now();
       final start = DateTime(now.year, now.month, now.day)
