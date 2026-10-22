@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
-import '../models/account.dart';
 import '../models/checkin_log.dart';
 import '../theme/app_theme.dart';
 import 'app_widgets.dart';
@@ -59,6 +58,8 @@ class _LogRow extends StatelessWidget {
     'claim': ('签到', Icons.flag_rounded),
     'already': ('重复签到', Icons.task_alt_rounded),
     'skip': ('跳过', Icons.remove_circle_outline_rounded),
+    'replay': ('重复领取', Icons.replay_rounded),
+    'error': ('失败', Icons.error_outline_rounded),
   };
 
   @override
@@ -66,7 +67,7 @@ class _LogRow extends StatelessWidget {
     final palette = AppTokensScope.of(context);
     final (label, icon) = _actions[log.action] ?? (log.action, Icons.circle_outlined);
     final color = log.ok ? palette.success : palette.danger;
-    final providerColor = log.provider == PlatformKind.trae ? palette.traeColor : palette.workbuddyColor;
+    final providerColor = palette.colorOf(log.provider);
 
     return SurfaceCard(
       padding: EdgeInsets.symmetric(

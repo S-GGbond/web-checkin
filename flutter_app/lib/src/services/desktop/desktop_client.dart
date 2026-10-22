@@ -240,6 +240,7 @@ class DesktopClient {
   // 进程
   // ---------------------------------------------------------------------------
 
+  /// 客户端可执行文件的特征：Windows 是镜像名，其它平台是命令行里的路径片段。
   static List<String> _processMatchers(PlatformKind provider) {
     if (Platform.isWindows) {
       return provider == PlatformKind.trae ? ['Trae CN.exe', 'Trae.exe'] : ['WorkBuddy.exe'];
@@ -254,38 +255,113 @@ class DesktopClient {
         : ['/workbuddy', 'workbuddy/workbuddy'];
   }
 
-  static Future<List<int>> runningPids(PlatformKind provider) async {
-    final matchers = _processMatchers(provider);
-    final pids = <int>{};
+  /// Windows 结束进程只认镜像名（taskkill /IM）。
+  static List<String> _imageNames(PlatformKind provider) =>
+      provider == PlatformKind.trae
+      ? ['Trae CN.exe', 'Trae.exe']
+      : ['WorkBuddy.exe'];
+
+  /// Electron 的 renderer / gpu / utility / crashpad 都是同一个 exe，
+  /// 但它们不持有会话库、退出时也不回写，不能算「客户端还开着」。
+  static bool _isHelperCommand(String command) {
+    final lower = command.toLowerCase();
+    return lower.contains('--type=') ||
+        lower.contains('--utility-sub-type=') ||
+        lower.contains('--crashpad') ||
+        lower.contains('--database=');
+  }
+
+  /// 列出进程（pid / 父 pid / 进程名 + 命令行）。Windows 走 WMI，其它平台走 `ps`。
+  static Future<List<({int pid, int ppid, String command})>>
+  _processList() async {
+    final result = <({int pid, int ppid, String command})>[];
     if (Platform.isWindows) {
-      for (final image in matchers) {
-        try {
-          final result = await Process.run('tasklist', ['/FI', 'IMAGENAME eq $image', '/NH']);
-          if (result.exitCode != 0) continue;
-          for (final line in const LineSplitter().convert(result.stdout as String)) {
-            final match = RegExp('^${RegExp.escape(image)}\\s+(\\d+)', caseSensitive: false).firstMatch(line.trim());
-            if (match != null) pids.add(int.parse(match.group(1)!));
-          }
-        } catch (_) {
-          continue;
-        }
-      }
-      return pids.toList();
-    }
-    for (final pattern in matchers) {
+      // 不按镜像名过滤：客户端变体多（Trae CN / TRAE SOLO / 重命名），
+      // 统一取「进程名 + 命令行」再由 Dart 侧匹配。
+      final script =
+          'Get-CimInstance Win32_Process | '
+          'ForEach-Object { "{0}`t{1}`t{2} {3}" -f \$_.ProcessId, '
+          '\$_.ParentProcessId, \$_.Name, \$_.CommandLine }';
       try {
-        final result = await Process.run('pgrep', ['-f', pattern]);
-        if (result.exitCode != 0) continue;
-        for (final line in const LineSplitter().convert(result.stdout as String)) {
-          final pid = int.tryParse(line.trim());
-          if (pid != null) pids.add(pid);
+        final run = await Process.run('powershell', [
+          '-NoProfile',
+          '-NonInteractive',
+          '-Command',
+          script,
+        ]).timeout(const Duration(seconds: 8));
+        if (run.exitCode == 0) {
+          for (final line in const LineSplitter().convert(run.stdout as String)) {
+            final first = line.indexOf('\t');
+            final second = first < 0 ? -1 : line.indexOf('\t', first + 1);
+            if (first < 0 || second < 0) continue;
+            final id = int.tryParse(line.substring(0, first).trim());
+            final parent = int.tryParse(line.substring(first + 1, second).trim());
+            if (id == null) continue;
+            result.add((
+              pid: id,
+              ppid: parent ?? 0,
+              command: line.substring(second + 1),
+            ));
+          }
         }
       } catch (_) {
-        continue;
+        // PowerShell 不可用时返回空列表，退化成「没有在运行」。
       }
+      return result;
     }
-    pids.remove(pid);
-    return pids.toList();
+
+    try {
+      final run = await Process.run(
+        'ps',
+        ['-axo', 'pid=,ppid=,command='],
+      ).timeout(const Duration(seconds: 5));
+      if (run.exitCode != 0) return result;
+      for (final line in const LineSplitter().convert(run.stdout as String)) {
+        final trimmed = line.trim();
+        if (trimmed.isEmpty) continue;
+        final parts = trimmed.split(RegExp(r'\s+'));
+        if (parts.length < 3) continue;
+        final id = int.tryParse(parts[0]);
+        if (id == null) continue;
+        result.add((
+          pid: id,
+          ppid: int.tryParse(parts[1]) ?? 0,
+          command: trimmed.substring(
+            trimmed.indexOf(parts[2], parts[0].length + parts[1].length),
+          ),
+        ));
+      }
+    } catch (_) {
+      // 忽略：拿不到进程列表就当作没有运行。
+    }
+    return result;
+  }
+
+  /// 正在运行的客户端**主进程**。
+  ///
+  /// 客户端会派生出大量同名子进程（renderer、sandbox、daemon、crashpad…），
+  /// 它们既不持有会话库、退出时也不回写，把「主进程还活着吗」当成判断依据：
+  /// 匹配到的进程里，父进程不在匹配集合中的那个就是主进程。
+  static Future<List<int>> runningPids(PlatformKind provider) async {
+    final matchers = _processMatchers(provider)
+        .map((matcher) => matcher.toLowerCase())
+        .toList();
+    final processes = await _processList();
+    final matched = <int>{
+      for (final process in processes)
+        if (process.pid != pid &&
+            matchers.any(process.command.toLowerCase().contains) &&
+            !_isHelperCommand(process.command))
+          process.pid,
+    };
+    if (matched.isEmpty) return const [];
+
+    final roots = <int>[
+      for (final process in processes)
+        if (matched.contains(process.pid) && !matched.contains(process.ppid))
+          process.pid,
+    ];
+    return roots.isEmpty ? matched.toList() : roots;
   }
 
   /// 只判断进程是否还活着：Linux 直接看 `/proc`，避免每次轮询都 spawn `pgrep`。
@@ -329,7 +405,7 @@ class DesktopClient {
     if (initial.isEmpty) return const [];
 
     if (Platform.isWindows) {
-      for (final image in _processMatchers(provider)) {
+      for (final image in _imageNames(provider)) {
         try {
           await Process.run('taskkill', ['/IM', image, '/T', '/F']);
         } catch (_) {

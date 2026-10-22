@@ -47,7 +47,7 @@ class AccountExportResult {
   final int sizeBytes;
 }
 
-/// 把账号库导出成可读的 JSON（含 WorkBuddy / Trae 的登录态）。
+/// 把账号库导出成可读的 JSON（含 WorkBuddy / Trae / Qoder 的登录态）。
 ///
 /// 登录态是明文的：Trae 是加密容器密文，WorkBuddy 按客户端要求本身就是明文，
 /// 导出文件请当敏感文件保管。导出只读账号库，不改动任何账号。

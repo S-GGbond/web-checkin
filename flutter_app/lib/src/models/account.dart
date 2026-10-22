@@ -3,7 +3,8 @@ import 'dart:convert';
 /// 支持的平台。当前实现 WorkBuddy 与 Trae 两个平台。
 enum PlatformKind {
   workbuddy('workbuddy', 'WorkBuddy'),
-  trae('trae', 'Trae');
+  trae('trae', 'Trae'),
+  qoder('qoder', 'Qoder');
 
   const PlatformKind(this.id, this.label);
 
@@ -124,6 +125,7 @@ class Account {
       case PlatformKind.workbuddy:
         return status['today_checked_in'] == true || locallyClaimed;
       case PlatformKind.trae:
+      case PlatformKind.qoder:
         return status['checked_in'] == true || locallyClaimed;
     }
   }

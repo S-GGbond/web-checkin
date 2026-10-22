@@ -8,6 +8,7 @@ import 'package:pointycastle/export.dart';
 import '../../data/app_database.dart';
 import '../../models/account.dart';
 import '../../models/login_session.dart';
+import '../../models/usage_record.dart';
 import '../http_json.dart';
 
 /// WorkBuddy 平台服务：登录状态申请与轮询、token 续期、签到状态与每日签到。
@@ -338,6 +339,100 @@ class WorkBuddyService {
       return await _refresh(row);
     }
     return credential;
+  }
+
+  // ---------------------------------------------------------------------------
+  // 用量明细（积分口径）
+  // ---------------------------------------------------------------------------
+
+  /// 拉取最近 [days] 天的逐笔用量，自动翻页；一条请求一条记录。
+  Future<UsageQueryResult> queryUsage(
+    Map<String, Object?> row, {
+    int days = 7,
+    int pageSize = 100,
+    int maxPages = 10,
+  }) async {
+    final credential = await _ensureFresh(row);
+    final auth = credential['auth'] as Map<String, dynamic>;
+    final account =
+        (credential['account'] as Map?)?.cast<String, dynamic>() ?? const {};
+    final now = DateTime.now();
+    final start = DateTime(
+      now.year,
+      now.month,
+      now.day,
+    ).subtract(Duration(days: days - 1));
+    final end = DateTime(now.year, now.month, now.day, 23, 59, 59);
+
+    final name = (row['display_name']?.toString().isNotEmpty ?? false)
+        ? row['display_name'].toString()
+        : (row['external_id']?.toString() ?? '');
+    final entries = <UsageEntry>[];
+    var total = 0;
+    for (var page = 1; page <= maxPages; page++) {
+      final result = await _request(
+        row['endpoint'] as String,
+        'POST',
+        '/billing/meter/get-user-request-usage',
+        token: auth['accessToken']?.toString(),
+        refreshToken: auth['refreshToken']?.toString(),
+        account: account,
+        body: {
+          'startTime': _formatTime(start),
+          'endTime': _formatTime(end),
+          'pageNum': page,
+          'pageSize': pageSize,
+        },
+      );
+      if (result.status == 401 || result.status == 403) {
+        throw const AuthExpiredException();
+      }
+      final data = result.body['data'];
+      if (result.status != 200 || result.body['code'] != 0 || data is! Map) {
+        throw ApiException(
+          '查询用量失败: HTTP ${result.status} code=${result.body['code']} msg=${result.body['msg']}',
+        );
+      }
+      final rows = (data['data'] ?? data['list']) as List? ?? const [];
+      total = _intOf(data['total']) ?? rows.length;
+      for (final item in rows) {
+        if (item is! Map) continue;
+        final time = DateTime.tryParse(
+          (item['requestTime'] ?? '').toString().replaceFirst(' ', 'T'),
+        );
+        entries.add(
+          UsageEntry(
+            provider: PlatformKind.workbuddy,
+            accountId: _intOf(row['id']) ?? 0,
+            accountName: name,
+            time: time ?? now,
+            title: (item['inputTrunc'] ?? item['input'] ?? '').toString(),
+            model: (item['model'] ?? '').toString(),
+            credits: _doubleOf(item['credit']),
+            client: (item['client'] ?? '').toString(),
+          ),
+        );
+      }
+      if (rows.length < pageSize || entries.length >= total) break;
+    }
+    return UsageQueryResult(entries: entries, total: total);
+  }
+
+  static String _formatTime(DateTime time) {
+    String two(int value) => value.toString().padLeft(2, '0');
+    return '${time.year}-${two(time.month)}-${two(time.day)} '
+        '${two(time.hour)}:${two(time.minute)}:${two(time.second)}';
+  }
+
+  static int? _intOf(Object? value) {
+    if (value is int) return value;
+    if (value is num) return value.toInt();
+    return int.tryParse(value?.toString() ?? '');
+  }
+
+  static double _doubleOf(Object? value) {
+    if (value is num) return value.toDouble();
+    return double.tryParse(value?.toString() ?? '') ?? 0;
   }
 
   // ---------------------------------------------------------------------------

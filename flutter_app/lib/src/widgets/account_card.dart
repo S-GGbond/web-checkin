@@ -41,8 +41,7 @@ class AccountCard extends StatelessWidget {
     final usage = account.usage;
     final checkedIn = account.checkedInToday;
 
-    final Color providerColor =
-        account.provider == PlatformKind.trae ? palette.traeColor : palette.workbuddyColor;
+    final Color providerColor = palette.colorOf(account.provider);
 
     final statusPill = !account.enabled
         ? StatusPill(label: '已停用', color: palette.textSecondary, icon: Icons.pause_circle_outline_rounded)

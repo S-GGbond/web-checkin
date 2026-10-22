@@ -109,7 +109,7 @@ class AccountActions {
   static Future<void> refreshAll(BuildContext context) async {
     final state = context.read<AppState>();
     final messenger = ScaffoldMessenger.of(context);
-    await state.refreshAll();
+    await state.refreshAll(force: true);
     messenger.showSnackBar(const SnackBar(content: Text('已刷新所有账号状态')));
   }
 
@@ -146,6 +146,11 @@ class AccountActions {
                 description: 'PKCE 授权，本地回环回调接收授权码',
               ),
               const SizedBox(height: AppTokens.space2),
+              _ProviderTile(
+                provider: PlatformKind.qoder,
+                description: '设备码登录，浏览器确认后自动入库',
+              ),
+              const SizedBox(height: AppTokens.space2),
             ],
           ),
         ),
@@ -166,8 +171,8 @@ class _ProviderTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final palette = AppTokensScope.of(context);
-    final color = provider == PlatformKind.trae ? palette.traeColor : palette.workbuddyColor;
-    final icon = provider == PlatformKind.trae ? Icons.bolt_rounded : Icons.rocket_launch_rounded;
+    final color = palette.colorOf(provider);
+    final icon = providerIcon(provider);
     return Material(
       color: palette.surfaceElevated,
       borderRadius: BorderRadius.circular(AppTokens.radiusMd),

@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
-import '../models/account.dart';
 import '../models/login_session.dart';
 import '../state/app_state.dart';
 import '../theme/app_theme.dart';
@@ -90,9 +89,8 @@ class _LoginDialogState extends State<LoginDialog> {
     final palette = AppTokensScope.of(context);
     final session = widget.session;
     final waiting = !session.isTerminal;
-    final isTrae = session.provider == PlatformKind.trae;
-    final color = isTrae ? palette.traeColor : palette.workbuddyColor;
-    final icon = isTrae ? Icons.bolt_rounded : Icons.rocket_launch_rounded;
+    final color = palette.colorOf(session.provider);
+    final icon = providerIcon(session.provider);
 
     return AlertDialog(
       title: Row(

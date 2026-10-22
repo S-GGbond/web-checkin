@@ -1,5 +1,8 @@
+import 'dart:convert';
+import 'dart:io';
 import 'dart:math';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
@@ -10,10 +13,49 @@ import '../models/chat_session.dart';
 import '../services/desktop/desktop_client.dart';
 import '../services/sessions/session_service.dart';
 import '../services/sessions/trae_migrator.dart';
+import '../services/sessions/workbuddy_packer.dart';
 import '../state/app_state.dart';
 import '../theme/app_theme.dart';
 import '../widgets/app_widgets.dart';
 import '../widgets/responsive.dart';
+
+/// 后台 isolate 的入参：只带可发送的基本类型，避免把 async 帧 / widget 树带过去。
+class _CopyRequest {
+  const _CopyRequest({
+    required this.fromUid,
+    required this.toUid,
+    required this.sessionIds,
+  });
+
+  final String fromUid;
+  final String toUid;
+  final Set<String> sessionIds;
+}
+
+class _MergeRequest {
+  const _MergeRequest({required this.path, required this.dryRun});
+
+  final String path;
+  final bool dryRun;
+}
+
+/// 顶层入口：加解密 + 复制 200 MB 级的库要十几秒，放后台 isolate 跑。
+Future<TraeCopyResult> _copyTask(_CopyRequest request) =>
+    const TraeMigrator().copySessions(
+      fromUid: request.fromUid,
+      toUid: request.toUid,
+      sessionIds: request.sessionIds,
+    );
+
+Future<TraePackResult> _packTask(Set<String> sessionIds) =>
+    const TraeMigrator().pack(sessionIds: sessionIds);
+
+Future<TraeMergeResult> _mergeTask(_MergeRequest request) =>
+    const TraeMigrator().merge(
+      fromPath: request.path,
+      dryRun: request.dryRun,
+      requireClientClosed: false,
+    );
 
 /// 会话：把本机客户端里散落的会话（WorkBuddy 桌面端 / CLI、Trae）合并成一张列表，
 /// 选中的桌面端会话可以复制到另一个 WorkBuddy 账号。
@@ -42,17 +84,29 @@ class _SessionsScreenState extends State<SessionsScreen> {
   bool _packing = false;
   bool _merging = false;
 
+  /// 上次扫描完成时间：短时间内重复进入页面不再全盘重扫。
+  DateTime? _lastScan;
+  static const _scanTtl = Duration(minutes: 2);
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) => _load());
   }
 
-  Future<void> _load() async {
+  Future<void> _load({bool force = false}) async {
     if (!mounted) return;
+    final last = _lastScan;
+    if (!force &&
+        _scan != null &&
+        last != null &&
+        DateTime.now().difference(last) < _scanTtl) {
+      return;
+    }
     setState(() => _loading = true);
     final result = await (widget.scanOverride?.call() ?? _service.scan());
     if (!mounted) return;
+    _lastScan = DateTime.now();
     setState(() {
       _scan = result;
       _loading = false;
@@ -143,22 +197,28 @@ class _SessionsScreenState extends State<SessionsScreen> {
           label: const Text('导入迁移包'),
         ),
         FilledButton.icon(
-          onPressed: accountSelected == 0
+          onPressed: accountSelected + traeSelected == 0
               ? null
               : () => _migrateDialog(context, state),
           icon: const Icon(Icons.drive_file_move_rounded, size: 18),
           label: Text(
-            accountSelected == 0
+            accountSelected + traeSelected == 0
                 ? '迁移到其他账号…'
+                : traeSelected > 0
+                ? '复制 $traeSelected 条到账号…'
                 : '迁移 $accountSelected 条到账号…',
           ),
         ),
-        if (traeSelected > 0)
+        if (_selected.isNotEmpty)
           OutlinedButton.icon(
             onPressed: _packing ? null : () => _exportPack(context),
             icon: const Icon(Icons.ios_share_rounded, size: 18),
             label: Text(
-              _packing ? '导出中…' : '导出 $traeSelected 条迁移包',
+              _packing
+                  ? '导出中…'
+                  : traeSelected > 0
+                  ? '导出 $traeSelected 条迁移包'
+                  : '导出 ${_selected.length} 条会话包',
             ),
           ),
       ],
@@ -171,7 +231,7 @@ class _SessionsScreenState extends State<SessionsScreen> {
           Text('会话', style: Theme.of(context).textTheme.titleLarge),
           const SizedBox(height: AppTokens.space1),
           Text(
-            '合并本机客户端里的会话：WorkBuddy 勾选后可迁移到另一个账号，Trae 可勾选导出迁移包',
+            '合并本机客户端里的会话：WorkBuddy / CodeBuddy IDE / CLI 可迁移到另一个账号，Trae 可复制一份到另一个账号，或导出迁移包',
             style: TextStyle(
               color: palette.textSecondary,
               fontSize: 13,
@@ -183,7 +243,8 @@ class _SessionsScreenState extends State<SessionsScreen> {
         ] else
           SectionTitle(
             title: '会话',
-            subtitle: '合并本机客户端里的会话：WorkBuddy 桌面端 / CLI 可迁移到另一个账号，Trae 可勾选导出迁移包',
+            subtitle:
+                '合并本机客户端里的会话：WorkBuddy / CodeBuddy IDE / CLI 迁移到另一个账号；Trae 复制到另一个账号，或导出迁移包',
             trailing: actions,
           ),
         const SizedBox(height: AppTokens.space4),
@@ -239,7 +300,8 @@ class _SessionsScreenState extends State<SessionsScreen> {
             ],
           Text(
             '对话正文来自客户端本地文件；Trae 的正文保存在客户端加密库里，只能显示会话信息与最后一条回复摘要。'
-            '迁移会写入目标账号的数据目录，建议先退出客户端再操作，重启客户端后生效。',
+            'Qoder 会读桌面端 main.sqlite 与 CLI 的 projects/*.jsonl。'
+            '转存会写入目标账号的数据目录，建议先退出客户端再操作，重启客户端后生效。',
             style: TextStyle(
               color: palette.textSecondary,
               fontSize: 12,
@@ -368,10 +430,33 @@ class _SessionsScreenState extends State<SessionsScreen> {
       );
     }
 
+    final looseQoder = sessions
+        .where(
+          (session) =>
+              session.provider == PlatformKind.qoder &&
+              session.accountUid.isEmpty,
+        )
+        .toList();
+    if (looseQoder.isNotEmpty) {
+      groups.add(
+        _SessionGroup(
+          title: 'Qoder · 本机会话',
+          subtitle: '桌面端未登录或读不到当前账号',
+          provider: PlatformKind.qoder,
+          sessions: looseQoder,
+        ),
+      );
+    }
+
     return groups;
   }
 
   Future<void> _migrateDialog(BuildContext context, AppState state) async {
+    final trae = _selectedSessions
+        .where((session) => session.migratable)
+        .toList();
+    if (trae.isNotEmpty) return _copyDialog(context, state, trae);
+
     final sessions = _selectedSessions
         .where((session) => session.accountMigratable)
         .toList();
@@ -391,6 +476,8 @@ class _SessionsScreenState extends State<SessionsScreen> {
       return;
     }
 
+    // WorkBuddy 客户端会话是改归属（原账号不再有），CodeBuddy IDE 是复制一份。
+    final movingOnly = sessions.every((session) => session.movable);
     final target = await showDialog<Account>(
       context: context,
       builder: (context) => AlertDialog(
@@ -401,7 +488,11 @@ class _SessionsScreenState extends State<SessionsScreen> {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Text('选择目标账号（会复制一份，原账号保留）：'),
+              Text(
+                movingOnly
+                    ? '选择目标账号（会话归属改到目标账号，原账号不再显示）：'
+                    : '选择目标账号（会复制一份，原账号保留）：',
+              ),
               const SizedBox(height: AppTokens.space2),
               for (final account in targets)
                 ListTile(
@@ -430,12 +521,16 @@ class _SessionsScreenState extends State<SessionsScreen> {
         ],
       ),
     );
-    if (target == null || !mounted) return;
+    if (target == null || !context.mounted) return;
 
     try {
-      final count = await _service.copySessions(
-        sessions: sessions,
-        targetUid: target.externalId,
+      final count = await _withProgress(
+        context,
+        '正在迁移 ${sessions.length} 条会话到 ${target.title}…',
+        () => _service.copySessions(
+          sessions: sessions,
+          targetUid: target.externalId,
+        ),
       );
       if (!context.mounted) return;
       setState(() {
@@ -443,25 +538,365 @@ class _SessionsScreenState extends State<SessionsScreen> {
       });
       showAppSnackBar(
         context,
-        count == 0 ? '没有可迁移的会话' : '已迁移 $count 条会话到 ${target.title}',
+        count == 0
+            ? '没有可迁移的会话'
+            : movingOnly
+            ? '已把 $count 条会话改归属到 ${target.title}'
+            : '已迁移 $count 条到 ${target.title}，重启 CodeBuddy IDE 并打开对应项目文件夹即可看到',
       );
-      await _load();
+      await _load(force: true);
     } catch (error) {
       if (!context.mounted) return;
       showAppSnackBar(context, '迁移失败：$error', error: true);
     }
   }
 
-  /// 把选中的 Trae 会话导出成迁移包（明文 SQLite，只含这些会话）。
+  /// 写客户端库的操作（解密 → 改写 → 重加密）要几秒，期间用模态进度锁住界面：
+  /// 既告诉用户「在干活」，也防止中途退出 / 关客户端导致写坏。
+  Future<T> _withProgress<T>(
+    BuildContext context,
+    String label,
+    Future<T> Function() task,
+  ) async {
+    final navigator = Navigator.of(context, rootNavigator: true);
+    final route = DialogRoute<void>(
+      context: context,
+      barrierDismissible: false,
+      barrierColor: Colors.black54,
+      builder: (context) => PopScope(
+        canPop: false,
+        child: AlertDialog(
+          content: Row(
+            children: [
+              const SizedBox(
+                width: 20,
+                height: 20,
+                child: CircularProgressIndicator(strokeWidth: 2.5),
+              ),
+              const SizedBox(width: AppTokens.space3),
+              Expanded(
+                child: Text(label, style: const TextStyle(fontSize: 13)),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+    navigator.push(route);
+    try {
+      return await task();
+    } finally {
+      if (route.isActive) navigator.removeRoute(route);
+    }
+  }
+
+  /// 迁移条件不满足时的说明弹窗（比 SnackBar 更不容易被忽略）。
+  Future<void> _showMigrationHint(
+    BuildContext context,
+    String title,
+    String message,
+  ) async {
+    if (!context.mounted) return;
+    await showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(title),
+        content: SizedBox(
+          width: min(400, MediaQuery.sizeOf(context).width - 64),
+          child: Text(
+            message,
+            style: const TextStyle(fontSize: 13, height: 1.5),
+          ),
+        ),
+        actions: [
+          FilledButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('知道了'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 写 Trae 会话库前先确认客户端已退出；只是残留在托盘/后台时给出「结束并继续」。
+  Future<bool> _ensureTraeClosed(BuildContext context) async {
+    final pids = await DesktopClient.runningPids(PlatformKind.trae);
+    if (pids.isEmpty) return true;
+    if (!context.mounted) return false;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Trae 还在运行'),
+        content: SizedBox(
+          width: min(400, MediaQuery.sizeOf(context).width - 64),
+          child: Text(
+            '检测到 Trae 进程（pid ${pids.take(3).join('、')}）。'
+            '写入会话库前需要完全退出，否则会被客户端覆盖。是否结束它并继续？',
+            style: const TextStyle(fontSize: 13, height: 1.5),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('结束并继续'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return false;
+    final left = await DesktopClient.stop(PlatformKind.trae);
+    if (left.isEmpty) return true;
+    if (context.mounted) {
+      showAppSnackBar(
+        context,
+        'Trae 仍在运行（pid ${left.join('、')}），请先在托盘里退出再试',
+        error: true,
+      );
+    }
+    return false;
+  }
+
+  /// Trae 的会话库里没有账号列，归属记在「项目」上：复制 =
+  /// 给目标账号建/复用同路径项目，把选中的会话整条复制过去（原会话保留）。
+  Future<void> _copyDialog(
+    BuildContext context,
+    AppState state,
+    List<ChatSession> sessions,
+  ) async {
+    final sourceUid = sessions.first.accountUid;
+    if (sourceUid.isEmpty) {
+      await _showMigrationHint(
+        context,
+        '这条 Trae 会话没有关联账号',
+        '会话归属是从 Trae 的登录态里读出来的，这条记录没有留下账号信息，无法判断副本要放到哪个账号下。',
+      );
+      return;
+    }
+    final registered = <String>{
+      for (final account in state.accounts)
+        if (account.provider == PlatformKind.trae) account.externalId,
+    };
+    // 会话库里有、账号库里没登记的账号也列出来：复制只需要目标 uid，
+    // 不要求本机当前登录着那个账号。
+    final discovered = <String>{
+      for (final session in _scan?.sessions ?? const <ChatSession>[])
+        if (session.provider == PlatformKind.trae &&
+            session.accountUid.isNotEmpty &&
+            session.accountUid != sourceUid &&
+            !registered.contains(session.accountUid))
+          session.accountUid,
+    };
+    final targets = <({String title, String uid})>[
+      for (final account in state.accounts)
+        if (account.provider == PlatformKind.trae &&
+            account.externalId != sourceUid)
+          (title: account.title, uid: account.externalId),
+      for (final uid in discovered)
+        (
+          title: '未登记账号 · ${uid.length > 8 ? uid.substring(0, 8) : uid}',
+          uid: uid,
+        ),
+    ];
+    if (targets.isEmpty) {
+      await _showMigrationHint(
+        context,
+        '没有其他 Trae 账号可以作为目标',
+        '本机会话库里只有 $sourceUid 这一个 Trae 账号的记录。'
+            '先在 Trae 里登录另一个账号（随便打开一个项目，让它产生会话），再回来刷新即可。',
+      );
+      return;
+    }
+
+    final target = await showDialog<({String title, String uid})>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('复制 ${sessions.length} 条 Trae 会话'),
+        content: SizedBox(
+          width: min(420, MediaQuery.sizeOf(context).width - 64),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                '把选中的 ${sessions.length} 条会话复制一份到目标账号，原账号的会话保留不动。'
+                'Trae 的归属记在项目上，副本会挂在目标账号的同路径项目下（没有就新建一个）。',
+                style: const TextStyle(fontSize: 12, height: 1.5),
+              ),
+              const SizedBox(height: AppTokens.space2),
+              const Text(
+                '请先完全退出 Trae 客户端；原库会自动备份，可随时还原。',
+                style: TextStyle(fontSize: 12, height: 1.5),
+              ),
+              const SizedBox(height: AppTokens.space3),
+              const Text('选择目标账号：'),
+              for (final account in targets)
+                ListTile(
+                  dense: true,
+                  contentPadding: EdgeInsets.zero,
+                  leading: Icon(
+                    Icons.account_circle_outlined,
+                    size: 18,
+                    color: AppTokensScope.of(context).accent,
+                  ),
+                  title: Text(account.title),
+                  subtitle: Text(
+                    account.uid,
+                    style: const TextStyle(fontSize: 11),
+                  ),
+                  onTap: () => Navigator.pop(context, account),
+                ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('取消'),
+          ),
+        ],
+      ),
+    );
+    if (target == null || !context.mounted) return;
+    if (!await _ensureTraeClosed(context)) return;
+    if (!context.mounted) return;
+
+    setState(() => _merging = true);
+    try {
+      final ids = sessions.map((session) => session.sessionId).toSet();
+      // 加解密 + 复制 200 MB 级的库要十几秒，放后台 isolate，界面才不会「未响应」。
+      final result = await _withProgress(
+        context,
+        '正在复制 ${ids.length} 条 Trae 会话（解密 → 复制 → 重新加密）…',
+        () => compute(
+          _copyTask,
+          _CopyRequest(
+            fromUid: sourceUid,
+            toUid: target.uid,
+            sessionIds: ids,
+          ),
+        ),
+      );
+      if (!context.mounted) return;
+      if (result.sessions == 0) {
+        showAppSnackBar(context, '没有找到可复制的会话');
+      } else {
+        // 后台 isolate 拿不到应用目录，归属兜底记录放到主 isolate 写。
+        await SessionService.rememberTraeOwnership({
+          for (final id in result.newSessionIds.values) id: target.uid,
+        });
+        if (!context.mounted) return;
+        await _showCopyReport(context, result, target);
+      }
+      setState(() => _selected.clear());
+      await _load(force: true);
+    } on TraeMigrationException catch (error) {
+      if (context.mounted) showAppSnackBar(context, error.message, error: true);
+    } catch (error) {
+      if (context.mounted) {
+        showAppSnackBar(context, '复制失败：$error', error: true);
+      }
+    } finally {
+      if (mounted) setState(() => _merging = false);
+    }
+  }
+
+  Future<void> _showCopyReport(
+    BuildContext context,
+    TraeCopyResult result,
+    ({String title, String uid}) target,
+  ) async {
+    final tables = result.tables.entries.toList()
+      ..sort((a, b) => b.value.compareTo(a.value));
+    await showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('会话已复制'),
+        content: SizedBox(
+          width: 460,
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  '已把 ${result.sessions} 条会话复制到 ${target.title}（${result.toUid}），'
+                  '共写入 ${result.rows} 行；原账号的会话保持不变。',
+                ),
+                const SizedBox(height: AppTokens.space2),
+                Text(
+                  '新会话 ${result.newSessionIds.length} 条 · 新建项目 ${result.createdProjects} 个',
+                  style: const TextStyle(fontSize: 12, height: 1.5),
+                ),
+                if (tables.isNotEmpty) ...[
+                  const SizedBox(height: AppTokens.space2),
+                  for (final entry in tables.take(8))
+                    Text(
+                      '· ${entry.key}：${entry.value}',
+                      style: const TextStyle(fontSize: 12, height: 1.5),
+                    ),
+                ],
+                if (result.backupPath != null) ...[
+                  const SizedBox(height: AppTokens.space3),
+                  const Text('原库备份：', style: TextStyle(fontSize: 12)),
+                  SelectableText(
+                    result.backupPath!,
+                    style: const TextStyle(
+                      fontSize: 11,
+                      fontFamily: 'monospace',
+                    ),
+                  ),
+                ],
+                const SizedBox(height: AppTokens.space3),
+                const Text(
+                  'Trae 的会话列表只显示「当前打开的工作区」里的会话。'
+                  '重启并切到目标账号后，打开下面这些文件夹才能看到副本，'
+                  '开着别的工作区时不会出现：',
+                  style: TextStyle(fontSize: 12, height: 1.5),
+                ),
+                for (final path in result.projectPaths)
+                  Padding(
+                    padding: const EdgeInsets.only(top: AppTokens.space1),
+                    child: SelectableText(
+                      '· $path',
+                      style: const TextStyle(
+                        fontSize: 11,
+                        fontFamily: 'monospace',
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ),
+        actions: [
+          FilledButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('知道了'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 导出选中的会话：Trae 走加密库裁剪成的 SQLite 迁移包，
+  /// WorkBuddy 家族走明文 JSON 会话包（导入端写回 WorkBuddy 客户端）。
   Future<void> _exportPack(BuildContext context) async {
-    final ids = _selectedSessions
-        .where((session) => session.migratable)
-        .map((session) => session.sessionId)
-        .toSet();
-    if (ids.isEmpty) return;
+    final sessions = _selectedSessions;
+    if (sessions.isEmpty) return;
+    final trae = sessions.where((session) => session.migratable).toList();
+    if (trae.isEmpty) return _exportWorkbuddyPack(context, sessions);
+    final ids = trae.map((session) => session.sessionId).toSet();
     setState(() => _packing = true);
     try {
-      final result = await const TraeMigrator().pack(sessionIds: ids);
+      final result = await _withProgress(
+        context,
+        '正在导出 ${ids.length} 条会话的迁移包…',
+        () => compute(_packTask, ids),
+      );
       if (!context.mounted) return;
       setState(() => _selected.clear());
       await showDialog<void>(
@@ -516,6 +951,180 @@ class _SessionsScreenState extends State<SessionsScreen> {
     }
   }
 
+  /// 导出 WorkBuddy / CodeBuddy IDE / CLI 会话成 JSON 包。
+  Future<void> _exportWorkbuddyPack(
+    BuildContext context,
+    List<ChatSession> sessions,
+  ) async {
+    setState(() => _packing = true);
+    try {
+      final result = await _withProgress(
+        context,
+        '正在导出 ${sessions.length} 条会话…',
+        () => const WorkbuddyPacker().pack(
+          sessions: sessions,
+          readMessages: _service.readMessages,
+        ),
+      );
+      if (!context.mounted) return;
+      setState(() => _selected.clear());
+      await showDialog<void>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('会话包已导出'),
+          content: SizedBox(
+            width: 460,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  '含 ${result.sessions} 个会话 · ${_formatBytes(result.sizeBytes)}',
+                ),
+                const SizedBox(height: AppTokens.space2),
+                SelectableText(
+                  result.path,
+                  style: const TextStyle(fontSize: 11, fontFamily: 'monospace'),
+                ),
+                const SizedBox(height: AppTokens.space3),
+                const Text(
+                  '在另一台机器上点「导入迁移包」选这个文件即可写进 WorkBuddy。包里是明文正文，传完请删除。',
+                  style: TextStyle(fontSize: 12, height: 1.5),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () async {
+                await Clipboard.setData(ClipboardData(text: result.path));
+                if (context.mounted) showAppSnackBar(context, '路径已复制');
+              },
+              child: const Text('复制路径'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('知道了'),
+            ),
+          ],
+        ),
+      );
+    } on WorkbuddyPackException catch (error) {
+      if (context.mounted) showAppSnackBar(context, error.message, error: true);
+    } catch (error) {
+      if (context.mounted) {
+        showAppSnackBar(context, '导出失败：$error', error: true);
+      }
+    } finally {
+      if (mounted) setState(() => _packing = false);
+    }
+  }
+
+  /// 会话包是 JSON（WorkBuddy 家族），迁移包是 SQLite（Trae）。
+  static Future<bool> _isWorkbuddyPack(String path) async {
+    try {
+      final handle = await File(path).open();
+      try {
+        final head = await handle.read(64);
+        return utf8
+            .decode(head, allowMalformed: true)
+            .trimLeft()
+            .startsWith('{');
+      } finally {
+        await handle.close();
+      }
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<void> _importWorkbuddyPack(
+    BuildContext context,
+    String path,
+    bool dryRun,
+  ) async {
+    final state = context.read<AppState>();
+    final accounts = state.accounts
+        .where((account) => account.provider == PlatformKind.workbuddy)
+        .toList();
+
+    String? target;
+    if (accounts.isNotEmpty) {
+      target = await showDialog<String>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('导入到哪个账号'),
+          content: SizedBox(
+            width: min(380, MediaQuery.sizeOf(context).width - 64),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                ListTile(
+                  dense: true,
+                  contentPadding: EdgeInsets.zero,
+                  leading: const Icon(Icons.inbox_outlined, size: 18),
+                  title: const Text('沿用包里的账号'),
+                  onTap: () => Navigator.pop(context, ''),
+                ),
+                for (final account in accounts)
+                  ListTile(
+                    dense: true,
+                    contentPadding: EdgeInsets.zero,
+                    leading: Icon(
+                      Icons.account_circle_outlined,
+                      size: 18,
+                      color: AppTokensScope.of(context).accent,
+                    ),
+                    title: Text(account.title),
+                    subtitle: Text(
+                      account.externalId,
+                      style: const TextStyle(fontSize: 11),
+                    ),
+                    onTap: () => Navigator.pop(context, account.externalId),
+                  ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('取消'),
+            ),
+          ],
+        ),
+      );
+      if (target == null || !context.mounted) return;
+    }
+
+    setState(() => _merging = true);
+    try {
+      final count = await _withProgress(
+        context,
+        dryRun ? '正在试算会话包…' : '正在把会话写进 WorkBuddy…',
+        () => const WorkbuddyPacker().import(
+          fromPath: path,
+          targetUid: (target != null && target.isNotEmpty) ? target : null,
+          dryRun: dryRun,
+        ),
+      );
+      if (!context.mounted) return;
+      showAppSnackBar(
+        context,
+        dryRun ? '会话包里有 $count 条会话（未写入）' : '已导入 $count 条会话到 WorkBuddy',
+      );
+      if (!dryRun) await _load(force: true);
+    } on WorkbuddyPackException catch (error) {
+      if (context.mounted) showAppSnackBar(context, error.message, error: true);
+    } catch (error) {
+      if (context.mounted) {
+        showAppSnackBar(context, '导入失败：$error', error: true);
+      }
+    } finally {
+      if (mounted) setState(() => _merging = false);
+    }
+  }
+
   /// 把迁移包里的新会话合并进本机 Trae 库（会自动备份并重新加密）。
   Future<void> _importPack(BuildContext context) async {
     final request = await showDialog<(String, bool)>(
@@ -524,15 +1133,23 @@ class _SessionsScreenState extends State<SessionsScreen> {
     );
     if (request == null || !context.mounted) return;
     final (path, dryRun) = request;
+    final workbuddyPack = await _isWorkbuddyPack(path);
+    if (!context.mounted) return;
+    if (workbuddyPack) {
+      return _importWorkbuddyPack(context, path, dryRun);
+    }
+    if (!dryRun && !await _ensureTraeClosed(context)) return;
+    if (!context.mounted) return;
     setState(() => _merging = true);
     try {
-      final result = await const TraeMigrator().merge(
-        fromPath: path,
-        dryRun: dryRun,
+      final result = await _withProgress(
+        context,
+        dryRun ? '正在试算迁移包…' : '正在合并迁移包（解密 → 合并 → 重新加密）…',
+        () => compute(_mergeTask, _MergeRequest(path: path, dryRun: dryRun)),
       );
       if (!context.mounted) return;
       await _showMergeReport(context, result);
-      if (!result.dryRun) await _load();
+      if (!result.dryRun) await _load(force: true);
     } on TraeMigrationException catch (error) {
       if (context.mounted) showAppSnackBar(context, error.message, error: true);
     } catch (error) {
@@ -583,7 +1200,10 @@ class _SessionsScreenState extends State<SessionsScreen> {
                   const Text('原库备份：', style: TextStyle(fontSize: 12)),
                   SelectableText(
                     result.backupPath!,
-                    style: const TextStyle(fontSize: 11, fontFamily: 'monospace'),
+                    style: const TextStyle(
+                      fontSize: 11,
+                      fontFamily: 'monospace',
+                    ),
                   ),
                 ],
               ],
@@ -692,10 +1312,14 @@ class _SummaryBar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final palette = AppTokensScope.of(context);
+    String? part(String label, int count) =>
+        count == 0 ? null : '$label $count';
     final parts = <String>[
-      'WorkBuddy 桌面端 ${scan.countOf(SessionSource.workbuddyDesktop)}',
-      'CLI ${scan.countOf(SessionSource.workbuddyCli)}',
-      'Trae ${scan.traeCount}',
+      ?part('WorkBuddy', scan.countOf(SessionSource.workbuddyApp)),
+      ?part('CodeBuddy IDE', scan.countOf(SessionSource.workbuddyDesktop)),
+      ?part('CLI', scan.countOf(SessionSource.workbuddyCli)),
+      ?part('Trae', scan.traeCount),
+      ?part('Qoder', scan.countOf(SessionSource.qoder)),
     ];
     return Wrap(
       spacing: AppTokens.space2,
@@ -707,10 +1331,13 @@ class _SummaryBar extends StatelessWidget {
           style: TextStyle(fontSize: 12, color: palette.textSecondary),
         ),
         const SizedBox(width: AppTokens.space2),
-        for (final option in const <PlatformKind?>[
+        for (final option in <PlatformKind?>[
           null,
-          PlatformKind.workbuddy,
-          PlatformKind.trae,
+          ...PlatformKind.values.where(
+            (provider) => scan.sessions.any(
+              (session) => session.provider == provider,
+            ),
+          ),
         ])
           ChoiceChip(
             label: Text(option == null ? '全部' : option.label),
@@ -1203,14 +1830,17 @@ class _ImportPackDialogState extends State<_ImportPackDialog> {
   Widget build(BuildContext context) {
     final palette = AppTokensScope.of(context);
     return AlertDialog(
-      title: const Text('导入 Trae 迁移包'),
+      title: const Text('导入迁移包'),
       content: SizedBox(
         width: 460,
         child: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text('迁移包路径（另一台机器导出的 trae-sessions-*.db）'),
+            const Text(
+              '包路径：Trae 是 trae-sessions-*.db，WorkBuddy 是 workbuddy-sessions-*.json，'
+              '会自动识别',
+            ),
             const SizedBox(height: AppTokens.space2),
             TextField(
               controller: _controller,
@@ -1266,4 +1896,3 @@ String _formatBytes(int bytes) {
   }
   return '${(bytes / 1024 / 1024).toStringAsFixed(1)} MB';
 }
-

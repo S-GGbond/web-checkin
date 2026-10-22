@@ -2,14 +2,22 @@ import 'account.dart';
 
 /// 会话来自哪个本地数据源。
 enum SessionSource {
-  /// WorkBuddy / CodeBuddy 桌面端：`Data/<账号>/CodeBuddyIDE/<账号>/history/<工作区>/<会话>`。
-  workbuddyDesktop('workbuddyDesktop', '桌面端'),
+  /// WorkBuddy 客户端：`~/.workbuddy/workbuddy.db` 的 `sessions` 表
+  /// （正文在 `~/.workbuddy/projects/<项目>/<会话>.jsonl`）。
+  workbuddyApp('workbuddyApp', 'WorkBuddy'),
+
+  /// CodeBuddy IDE（VS Code 内核的另一个产品）：
+  /// `CodeBuddyExtension/Data/<账号>/CodeBuddyIDE/<账号>/history/<工作区>/<会话>`。
+  workbuddyDesktop('workbuddyDesktop', 'CodeBuddy IDE'),
 
   /// CodeBuddy CLI：`~/.codebuddy/projects/<项目>/<会话>.jsonl`。
-  workbuddyCli('workbuddyCli', 'CLI'),
+  workbuddyCli('workbuddyCli', 'CodeBuddy CLI'),
 
   /// Trae 桌面端：状态库 + 快照/沙箱目录 + 渲染进程日志聚合。
-  trae('trae', 'Trae');
+  trae('trae', 'Trae'),
+
+  /// Qoder 桌面端 main.sqlite + CLI 的 projects/*.jsonl。
+  qoder('qoder', 'Qoder');
 
   const SessionSource(this.id, this.label);
 
@@ -104,11 +112,18 @@ class ChatSession {
   /// 是否具备可展示的正文（Trae 的正文在加密库里，只有一段预览）。
   bool get hasBody => source != SessionSource.trae;
 
+  /// 会话是不是来自 WorkBuddy 客户端本身（而不是 CodeBuddy IDE / CLI）。
+  bool get fromWorkbuddyApp => source == SessionSource.workbuddyApp;
+
+  /// WorkBuddy 客户端的会话按 `sessions.user_id` 归属，改一行就能换账号。
+  bool get movable =>
+      source == SessionSource.workbuddyApp && accountUid.isNotEmpty;
+
   /// 能整条搬到另一个 WorkBuddy 账号：
-  /// 桌面端直接复制会话目录，CLI 会话转成桌面端会话写进目标账号。
+  /// WorkBuddy 改 `user_id`，CodeBuddy IDE 复制会话目录，CLI 转成 IDE 会话写进去。
   bool get accountMigratable =>
       provider == PlatformKind.workbuddy &&
-      (copyable || source == SessionSource.workbuddyCli);
+      (movable || copyable || source == SessionSource.workbuddyCli);
 
   /// Trae 会话可以整段导出成迁移包，再到别的机器合并回客户端。
   bool get migratable => source == SessionSource.trae;
@@ -141,6 +156,7 @@ class ChatSession {
   }
 
   ChatSession copyWith({
+    String? accountUid,
     String? title,
     String? createdAt,
     String? lastMessageAt,
@@ -156,7 +172,7 @@ class ChatSession {
   }) {
     return ChatSession(
       provider: provider,
-      accountUid: accountUid,
+      accountUid: accountUid ?? this.accountUid,
       workspaceId: workspaceId,
       sessionId: sessionId,
       title: title ?? this.title,

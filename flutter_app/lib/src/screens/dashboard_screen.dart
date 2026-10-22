@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../models/account.dart';
+import 'activity_screen.dart';
 import '../state/app_state.dart';
 import '../theme/app_theme.dart';
 import '../widgets/account_actions.dart';
@@ -79,7 +80,9 @@ class DashboardScreen extends StatelessWidget {
           title: '最近动态',
           subtitle: '登录、状态刷新与签到都会记录在案',
           trailing: TextButton(
-            onPressed: () => onNavigate(2),
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute<void>(builder: (_) => const ActivityScreen()),
+            ),
             child: const Text('查看全部'),
           ),
         ),
@@ -347,8 +350,8 @@ class _ProviderSection extends StatelessWidget {
     final state = context.watch<AppState>();
     final palette = AppTokensScope.of(context);
     final accounts = state.accounts.where((a) => a.provider == provider).toList();
-    final color = provider == PlatformKind.trae ? palette.traeColor : palette.workbuddyColor;
-    final icon = provider == PlatformKind.trae ? Icons.bolt_rounded : Icons.rocket_launch_rounded;
+    final color = palette.colorOf(provider);
+    final icon = providerIcon(provider);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,

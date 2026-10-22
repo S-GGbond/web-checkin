@@ -7,6 +7,7 @@ import 'dart:math';
 import '../../data/app_database.dart';
 import '../../models/account.dart';
 import '../../models/login_session.dart';
+import '../../models/usage_record.dart';
 import '../../util/app_paths.dart';
 import '../desktop/desktop_client.dart';
 import '../http_json.dart';
@@ -644,6 +645,105 @@ class TraeService {
       },
       auth,
     );
+  }
+
+  // ---------------------------------------------------------------------------
+  // 用量明细（按会话聚合，口径=积分）
+  // ---------------------------------------------------------------------------
+
+  /// 查询最近 [days] 天的会话用量；一只会话一条，取首条用户输入当标题。
+  Future<UsageQueryResult> queryUsage(
+    Map<String, Object?> row, {
+    int days = 7,
+    int pageSize = 20,
+    int maxPages = 5,
+  }) async {
+    final auth = await _loadAuth(row);
+    final now = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+    final name = (row['display_name']?.toString().isNotEmpty ?? false)
+        ? row['display_name'].toString()
+        : (row['external_id']?.toString() ?? '');
+    final entries = <UsageEntry>[];
+    var total = 0;
+
+    for (var page = 1; page <= maxPages; page++) {
+      final result = await _post(
+        auth,
+        '/trae/api/v1/pay/query_user_usage_group_by_session',
+        {
+          'start_time': now - days * 86400,
+          'end_time': now,
+          'page_size': pageSize,
+          'page_num': page,
+          'usage_type': [7],
+        },
+      );
+      if (result.status != 200) {
+        final message =
+            result.body['message'] ?? result.body['Message'] ?? 'HTTP ${result.status}';
+        throw ApiException('查询用量失败: $message');
+      }
+
+      final body = result.body;
+      final data = body['data'] is Map ? body['data'] as Map : const {};
+      final raw =
+          (body['user_usage_group_by_sessions'] ??
+              data['user_usage_group_by_sessions']) as List? ??
+          const [];
+      total = _intOf(body['total'] ?? data['total']) ?? raw.length;
+
+      var added = 0;
+      for (final item in raw) {
+        if (item is! Map) continue;
+        final seconds = _intOf(item['usage_time']) ?? 0;
+        final extra = item['extra_info'] is Map
+            ? item['extra_info'] as Map
+            : const {};
+        entries.add(
+          UsageEntry(
+            provider: PlatformKind.trae,
+            accountId: _intOf(row['id']) ?? 0,
+            accountName: name,
+            time: DateTime.fromMillisecondsSinceEpoch(seconds * 1000),
+            title: (item['user_input_preview'] ?? '').toString(),
+            model: (item['model_name'] ?? '').toString(),
+            credits: _doubleOf(item['credits_float']),
+            client: _traeSource(_intOf(item['usage_source'])),
+            sessionId: (item['session_id'] ?? '').toString(),
+            inputTokens: _intOf(extra['input_token']) ?? 0,
+            outputTokens: _intOf(extra['output_token']) ?? 0,
+          ),
+        );
+        added++;
+      }
+      if (added < pageSize || entries.length >= total) break;
+    }
+    return UsageQueryResult(entries: entries, total: total);
+  }
+
+  static int? _intOf(Object? value) {
+    if (value is int) return value;
+    if (value is num) return value.toInt();
+    return int.tryParse(value?.toString() ?? '');
+  }
+
+  static double _doubleOf(Object? value) {
+    if (value is num) return value.toDouble();
+    return double.tryParse(value?.toString() ?? '') ?? 0;
+  }
+
+  static String _traeSource(int? source) {
+    switch (source) {
+      case 0:
+        return 'TRAE';
+      case 1:
+      case 2:
+        return 'Web';
+      case 3:
+        return 'Mobile';
+      default:
+        return source == null ? '-' : 'source:$source';
+    }
   }
 
   Future<Map<String, dynamic>> status(Map<String, Object?> row) async {

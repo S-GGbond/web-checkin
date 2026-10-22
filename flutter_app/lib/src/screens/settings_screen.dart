@@ -1,14 +1,22 @@
+import 'dart:io';
+
+import 'package:file_picker/file_picker.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:intl/intl.dart';
+import 'package:path/path.dart' as p;
 import 'package:provider/provider.dart';
 
 import '../models/account.dart';
 import '../services/account_export.dart';
 import '../services/background/background_scheduler.dart';
 import '../services/desktop/desktop_switch_service.dart';
+import 'schedules_screen.dart';
 import '../state/app_state.dart';
 import '../theme/app_theme.dart';
 import '../widgets/app_widgets.dart';
+import '../widgets/qoder_web_card.dart';
 import '../widgets/responsive.dart';
 
 /// 设置：数据位置、维护操作与关于信息。
@@ -25,7 +33,7 @@ class SettingsScreen extends StatelessWidget {
       children: [
         SectionTitle(title: '设置', subtitle: '数据位置、维护操作与平台说明'),
         const SizedBox(height: AppTokens.space5),
-        _SettingsCard(
+        SettingsCard(
           title: '数据与登录态',
           children: [
             Text('账号库位置', style: TextStyle(color: palette.textSecondary, fontSize: 12)),
@@ -59,126 +67,32 @@ class SettingsScreen extends StatelessWidget {
               ),
             ),
             const SizedBox(height: AppTokens.space4),
-            _ActionRow(
+            SettingsRow(
               icon: Icons.file_upload_outlined,
               title: '导出账号（JSON）',
-              subtitle: 'WorkBuddy / Trae 的账号与登录态，明文保存，请妥善保管',
+              subtitle: _mobileFileUi
+                  ? 'WorkBuddy / Trae / Qoder 的账号与登录态，明文导出到你选择的位置'
+                  : 'WorkBuddy / Trae / Qoder 的账号与登录态，明文保存，请妥善保管',
               trailing: OutlinedButton(
-                onPressed: () async {
-                  try {
-                    final result = await state.exportAccounts();
-                    if (!context.mounted) return;
-                    await showDialog<void>(
-                      context: context,
-                      builder: (context) => AlertDialog(
-                        title: const Text('账号已导出'),
-                        content: Column(
-                          mainAxisSize: MainAxisSize.min,
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              '${result.count} 个账号 · '
-                              '${(result.sizeBytes / 1024).toStringAsFixed(0)} KB',
-                            ),
-                            const SizedBox(height: AppTokens.space2),
-                            SelectableText(
-                              result.path,
-                              style: const TextStyle(
-                                fontSize: 11,
-                                fontFamily: 'monospace',
-                              ),
-                            ),
-                            const SizedBox(height: AppTokens.space3),
-                            const Text(
-                              '文件包含明文登录态，请勿上传或分享给他人。',
-                              style: TextStyle(fontSize: 12),
-                            ),
-                          ],
-                        ),
-                        actions: [
-                          TextButton(
-                            onPressed: () async {
-                              await Clipboard.setData(
-                                ClipboardData(text: result.path),
-                              );
-                              if (context.mounted) {
-                                showAppSnackBar(context, '路径已复制');
-                              }
-                            },
-                            child: const Text('复制路径'),
-                          ),
-                          FilledButton(
-                            onPressed: () => Navigator.pop(context),
-                            child: const Text('知道了'),
-                          ),
-                        ],
-                      ),
-                    );
-                  } catch (error) {
-                    if (context.mounted) {
-                      showAppSnackBar(context, '导出失败：$error', error: true);
-                    }
-                  }
-                },
+                onPressed: () => _exportAccounts(context, state),
                 child: const Text('导出'),
               ),
             ),
-            _ActionRow(
+            SettingsRow(
               icon: Icons.file_download_outlined,
               title: '导入账号（JSON）',
               subtitle: '从 checkin-accounts-*.json 恢复账号与登录态，同 id 覆盖',
               trailing: OutlinedButton(
-                onPressed: () async {
-                  final path = await showDialog<String>(
-                    context: context,
-                    builder: (context) => const _PathDialog(
-                      title: '导入账号（JSON）',
-                      hint: '/home/user/checkin-accounts-20261020.json',
-                      note: '同 provider + 账号 id 的账号会覆盖登录态；不会删除现有账号。',
-                    ),
-                  );
-                  if (path == null || !context.mounted) return;
-                  try {
-                    final result = await state.importAccounts(path: path);
-                    if (!context.mounted) return;
-                    final detail = result.problems.isEmpty
-                        ? ''
-                        : '\n${result.problems.take(5).join('\n')}';
-                    await showDialog<void>(
-                      context: context,
-                      builder: (context) => AlertDialog(
-                        title: const Text('导入完成'),
-                        content: Text(
-                          '新增 ${result.added} 个，更新 ${result.updated} 个，'
-                          '跳过 ${result.skipped} 个$detail',
-                        ),
-                        actions: [
-                          FilledButton(
-                            onPressed: () => Navigator.pop(context),
-                            child: const Text('关闭'),
-                          ),
-                        ],
-                      ),
-                    );
-                  } on AccountImportException catch (error) {
-                    if (context.mounted) {
-                      showAppSnackBar(context, error.message, error: true);
-                    }
-                  } catch (error) {
-                    if (context.mounted) {
-                      showAppSnackBar(context, '导入失败：$error', error: true);
-                    }
-                  }
-                },
+                onPressed: () => _importAccounts(context, state),
                 child: const Text('导入'),
               ),
             ),
             const SizedBox(height: AppTokens.space4),
-            _InfoLine(
+            SettingsNote(
               icon: Icons.lock_outline_rounded,
               text: 'Trae 登录态以 AES-128-CBC + SHA-512 容器加密存放；WorkBuddy 登录态按平台要求明文存放，请勿拷贝该数据库。',
             ),
-            _InfoLine(
+            SettingsNote(
               icon: Icons.timer_outlined,
               text: '每日定时由操作系统调度，应用关闭后仍会执行；失败最多重试 3 次，'
                   '每次重试间隔 5 分钟。',
@@ -186,28 +100,76 @@ class SettingsScreen extends StatelessWidget {
           ],
         ),
         const SizedBox(height: AppTokens.space4),
+        SettingsCard(
+          title: '外观',
+          children: [
+            Wrap(
+              spacing: AppTokens.space2,
+              runSpacing: AppTokens.space1,
+              children: [
+                for (final option in const [
+                  (ThemeMode.system, '跟随系统'),
+                  (ThemeMode.light, '浅色'),
+                  (ThemeMode.dark, '深色'),
+                ])
+                  ChoiceChip(
+                    label: Text(option.$2),
+                    selected: state.themeMode == option.$1,
+                    onSelected: (_) => state.setThemeMode(option.$1),
+                  ),
+              ],
+            ),
+            const SizedBox(height: AppTokens.space2),
+            Text(
+              '深色主题与浅色共用同一套设计令牌；默认跟随系统。',
+              style: TextStyle(color: palette.textSecondary, fontSize: 12),
+            ),
+          ],
+        ),
+        const SizedBox(height: AppTokens.space4),
+        if (state.accounts.any((account) => account.provider == PlatformKind.qoder)) ...[
+          QoderWebCard(state: state),
+          const SizedBox(height: AppTokens.space4),
+        ],
         if (state.desktopSwitchSupported) ...[
           _DesktopSwitchCard(state: state),
           const SizedBox(height: AppTokens.space4),
         ],
         _BackgroundScheduleCard(state: state),
         const SizedBox(height: AppTokens.space4),
-        _SettingsCard(
+        SettingsCard(
+          title: '定时任务',
+          children: [
+            SettingsRow(
+              icon: Icons.event_note_rounded,
+              title: '执行情况',
+              subtitle: '每个账号的定时、下次触发、上次结果与最近记录',
+              trailing: OutlinedButton(
+                onPressed: () => Navigator.of(context).push(
+                  MaterialPageRoute<void>(builder: (_) => const SchedulesScreen()),
+                ),
+                child: const Text('查看'),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: AppTokens.space4),
+        SettingsCard(
           title: '关于',
           children: [
-            _ActionRow(
+            SettingsRow(
               icon: Icons.apps_rounded,
               title: '签到中枢',
               subtitle: 'Flutter 跨端客户端 · 版本 1.0.0',
               trailing: const SizedBox.shrink(),
             ),
-            _ActionRow(
+            SettingsRow(
               icon: Icons.devices_rounded,
               title: '支持的平台',
               subtitle: PlatformKind.values.map((p) => p.label).join(' · '),
               trailing: const SizedBox.shrink(),
             ),
-            _InfoLine(
+            SettingsNote(
               icon: Icons.info_outline_rounded,
               text: '本项目与 WorkBuddy、Trae 官方没有隶属关系，请仅管理你本人拥有授权的账号，并遵守各平台服务条款。',
             ),
@@ -216,96 +178,174 @@ class SettingsScreen extends StatelessWidget {
       ],
     );
   }
-}
+  /// 手机端没有可写的 HOME，导入导出走系统文件选择器；桌面端保持写文件 + 路径提示。
+  static bool get _mobileFileUi =>
+      !kIsWeb && (Platform.isAndroid || Platform.isIOS);
 
-class _SettingsCard extends StatelessWidget {
-  const _SettingsCard({required this.title, required this.children});
+  Future<void> _exportAccounts(BuildContext context, AppState state) async {
+    if (!_mobileFileUi) {
+      try {
+        final result = await state.exportAccounts();
+        if (!context.mounted) return;
+        await _showExportResult(context, result);
+      } catch (error) {
+        if (context.mounted) {
+          showAppSnackBar(context, '导出失败：$error', error: true);
+        }
+      }
+      return;
+    }
 
-  final String title;
-  final List<Widget> children;
-
-  @override
-  Widget build(BuildContext context) {
-    return SurfaceCard(
-      padding: const EdgeInsets.all(AppTokens.space5),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(title, style: Theme.of(context).textTheme.titleMedium),
-          const SizedBox(height: AppTokens.space4),
-          ...children,
-        ],
-      ),
-    );
+    Directory? temp;
+    try {
+      temp = await Directory.systemTemp.createTemp('checkin-export-');
+      final stamp = DateFormat('yyyyMMdd-HHmmss').format(DateTime.now());
+      final name = 'checkin-accounts-$stamp.json';
+      final result = await state.exportAccounts(
+        outputPath: p.join(temp.path, name),
+      );
+      final bytes = await File(result.path).readAsBytes();
+      final uri = await FilePicker.saveFile(
+        dialogTitle: '导出账号',
+        fileName: name,
+        bytes: bytes,
+        mimeType: 'application/json',
+        type: FileType.custom,
+        allowedExtensions: const ['json'],
+      );
+      if (!context.mounted) return;
+      if (uri == null) return; // 用户取消
+      showAppSnackBar(
+        context,
+        '已导出 ${result.count} 个账号（${(result.sizeBytes / 1024).toStringAsFixed(0)} KB）',
+      );
+    } catch (error) {
+      if (context.mounted) {
+        showAppSnackBar(context, '导出失败：$error', error: true);
+      }
+    } finally {
+      try {
+        await temp?.delete(recursive: true);
+      } catch (_) {
+        // 忽略。
+      }
+    }
   }
-}
 
-class _ActionRow extends StatelessWidget {
-  const _ActionRow({
-    required this.icon,
-    required this.title,
-    required this.subtitle,
-    required this.trailing,
-  });
-
-  final IconData icon;
-  final String title;
-  final String subtitle;
-  final Widget trailing;
-
-  @override
-  Widget build(BuildContext context) {
-    final palette = AppTokensScope.of(context);
-    return Padding(
-      padding: const EdgeInsets.only(bottom: AppTokens.space3),
-      child: Row(
-        children: [
-          Icon(icon, size: 18, color: palette.accent),
-          const SizedBox(width: AppTokens.space3),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(title, style: Theme.of(context).textTheme.titleSmall),
-                const SizedBox(height: 2),
-                Text(subtitle, style: TextStyle(color: palette.textSecondary, fontSize: 12)),
-              ],
+  Future<void> _showExportResult(
+    BuildContext context,
+    AccountExportResult result,
+  ) async {
+    await showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('账号已导出'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              '${result.count} 个账号 · '
+              '${(result.sizeBytes / 1024).toStringAsFixed(0)} KB',
             ),
+            const SizedBox(height: AppTokens.space2),
+            SelectableText(
+              result.path,
+              style: const TextStyle(fontSize: 11, fontFamily: 'monospace'),
+            ),
+            const SizedBox(height: AppTokens.space3),
+            const Text(
+              '文件包含明文登录态，请勿上传或分享给他人。',
+              style: TextStyle(fontSize: 12),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () async {
+              await Clipboard.setData(ClipboardData(text: result.path));
+              if (context.mounted) showAppSnackBar(context, '路径已复制');
+            },
+            child: const Text('复制路径'),
           ),
-          const SizedBox(width: AppTokens.space3),
-          trailing,
-        ],
-      ),
-    );
-  }
-}
-
-class _InfoLine extends StatelessWidget {
-  const _InfoLine({required this.icon, required this.text});
-
-  final IconData icon;
-  final String text;
-
-  @override
-  Widget build(BuildContext context) {
-    final palette = AppTokensScope.of(context);
-    return Padding(
-      padding: const EdgeInsets.only(bottom: AppTokens.space2),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Padding(
-            padding: const EdgeInsets.only(top: 2),
-            child: Icon(icon, size: 15, color: palette.textSecondary),
-          ),
-          const SizedBox(width: AppTokens.space2),
-          Expanded(
-            child: Text(text, style: TextStyle(color: palette.textSecondary, fontSize: 12, height: 1.5)),
+          FilledButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('知道了'),
           ),
         ],
       ),
     );
   }
+
+  Future<void> _importAccounts(BuildContext context, AppState state) async {
+    String? path;
+    Directory? temp;
+    try {
+      if (_mobileFileUi) {
+        final file = await FilePicker.pickFile(
+          dialogTitle: '选择账号 JSON',
+          type: FileType.custom,
+          allowedExtensions: const ['json'],
+        );
+        if (file == null) return;
+        path = file.path;
+        if (path == null || path.isEmpty) {
+          final bytes = await file.readAsBytes();
+          temp = await Directory.systemTemp.createTemp('checkin-import-');
+          path = p.join(temp.path, file.name);
+          await File(path).writeAsBytes(bytes);
+        }
+      } else {
+        if (!context.mounted) return;
+        path = await showDialog<String>(
+          context: context,
+          builder: (context) => const _PathDialog(
+            title: '导入账号（JSON）',
+            hint: '/home/user/checkin-accounts-20261020.json',
+            note: '同 provider + 账号 id 的账号会覆盖登录态；不会删除现有账号。',
+          ),
+        );
+        if (path == null || !context.mounted) return;
+      }
+
+      final result = await state.importAccounts(path: path);
+      if (!context.mounted) return;
+      final detail = result.problems.isEmpty
+          ? ''
+          : '\n${result.problems.take(5).join('\n')}';
+      await showDialog<void>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('导入完成'),
+          content: Text(
+            '新增 ${result.added} 个，更新 ${result.updated} 个，'
+            '跳过 ${result.skipped} 个$detail',
+          ),
+          actions: [
+            FilledButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('关闭'),
+            ),
+          ],
+        ),
+      );
+    } on AccountImportException catch (error) {
+      if (context.mounted) {
+        showAppSnackBar(context, error.message, error: true);
+      }
+    } catch (error) {
+      if (context.mounted) {
+        showAppSnackBar(context, '导入失败：$error', error: true);
+      }
+    } finally {
+      try {
+        await temp?.delete(recursive: true);
+      } catch (_) {
+        // 忽略。
+      }
+    }
+  }
+
 }
 
 /// 桌面客户端账号切换：展示探测到的登录态、主程序与当前账号。
@@ -340,11 +380,16 @@ class _DesktopSwitchCard extends StatelessWidget {
           ),
           const SizedBox(height: AppTokens.space2),
           Text(
-            '客户端当前登录的账号会在启动或「重新探测」时自动加入账号库；切换入口在「账号」页的 Trae / WorkBuddy 分组里。',
+            '客户端当前登录的账号会在启动或「重新探测」时自动加入账号库；切换入口在「账号」页对应平台的分组里。',
             style: TextStyle(color: palette.textSecondary, fontSize: 12, height: 1.5),
           ),
           const SizedBox(height: AppTokens.space4),
-          for (final provider in PlatformKind.values) ...[
+          for (final provider in [
+            PlatformKind.workbuddy,
+            PlatformKind.trae,
+            if (state.desktopClientSupported(PlatformKind.qoder))
+              PlatformKind.qoder,
+          ]) ...[
             _ClientStatusBlock(
               provider: provider,
               info: state.desktopClient(provider),
@@ -352,10 +397,10 @@ class _DesktopSwitchCard extends StatelessWidget {
                   ? null
                   : byExternalId['${provider.id}:${state.desktopActiveId(provider)}'],
             ),
-            if (provider != PlatformKind.values.last) const SizedBox(height: AppTokens.space4),
+            const SizedBox(height: AppTokens.space4),
           ],
           const SizedBox(height: AppTokens.space2),
-          _InfoLine(
+          SettingsNote(
             icon: Icons.monitor_rounded,
             text: '切换入口只在 Windows / Linux / macOS 显示；手机端无法控制桌面客户端，因此不提供。'
                 '每次写入前会先完全退出客户端并保留一份登录态备份。',
@@ -456,11 +501,11 @@ class _BackgroundScheduleCard extends StatelessWidget {
           ),
           const SizedBox(height: AppTokens.space3),
           if (info.note != null)
-            _InfoLine(icon: Icons.info_outline_rounded, text: info.note!),
+            SettingsNote(icon: Icons.info_outline_rounded, text: info.note!),
           if (info.lastError != null)
-            _InfoLine(icon: Icons.error_outline_rounded, text: '最近一次同步失败：${info.lastError}'),
+            SettingsNote(icon: Icons.error_outline_rounded, text: '最近一次同步失败：${info.lastError}'),
           if (state.needsExactAlarmPermission)
-            _InfoLine(
+            SettingsNote(
               icon: Icons.alarm_on_rounded,
               text: '尚未授予「闹钟和提醒」权限：当前只能用非精确闹钟，系统可能推迟执行。'
                   '点右侧按钮去系统设置里开启，回来后会自动重新同步。',

@@ -5,10 +5,12 @@ import 'dart:typed_data';
 import 'package:path/path.dart' as p;
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
+import '../../models/account.dart';
 import '../../models/chat_session.dart';
 import 'session_service.dart';
 import 'trae_db_cipher.dart';
 import 'trae_db_key.dart';
+import '../desktop/desktop_client.dart';
 import 'vscdb_reader.dart';
 
 /// Trae 会话库读取失败（找不到库 / 拿不到密钥 / 解密校验不过）。
@@ -19,6 +21,33 @@ class TraeChatException implements Exception {
 
   @override
   String toString() => message;
+}
+
+/// Trae 会话库里的一行索引：会话归属哪个账号、属于哪个项目。
+class TraeSessionInfo {
+  const TraeSessionInfo({
+    required this.sessionId,
+    required this.projectId,
+    required this.userId,
+    required this.title,
+    required this.projectPath,
+    required this.createdAt,
+    required this.updatedAt,
+    required this.messages,
+  });
+
+  final String sessionId;
+  final String projectId;
+
+  /// `project.user_id`：Trae 的会话归属就记在项目上。
+  final String userId;
+  final String title;
+  final String projectPath;
+
+  /// 秒级时间戳。
+  final int createdAt;
+  final int updatedAt;
+  final int messages;
 }
 
 /// Trae 桌面端的 AI 会话正文库 ModularData/ai-agent/database.db。
@@ -116,6 +145,67 @@ class TraeChatDb {
       await Future<void>.delayed(const Duration(milliseconds: 300));
     }
     throw TraeChatException('读取 Trae 会话库失败：$failure');
+  }
+
+  /// 列出会话 → 项目、归属账号、标题、消息数与最近更新时间（不解正文）。
+  ///
+  /// 会话库里没有账号列，归属记在 chat_session.project_id → project.user_id 上；
+  /// 状态库的 draft 键只覆盖最近打开过的少量会话，不能当账号来源。
+  Future<List<TraeSessionInfo>> index() async {
+    String sql(bool archived) {
+      final filter = archived ? ' AND m.is_archived = 0' : '';
+      return 'SELECT s.session_id AS sid, s.project_id AS pid, '
+          's.session_title AS title, s.created_at AS cat, s.updated_at AS uat, '
+          'p.user_id AS uid, p.absolute_path AS path, '
+          '(SELECT count(*) FROM chat_message m WHERE m.session_id = s.session_id '
+          'AND m.deleted_at = 0$filter) AS n '
+          'FROM chat_session s LEFT JOIN project p ON p.project_id = s.project_id '
+          'WHERE s.deleted_at = 0';
+    }
+
+    List<Map<String, Object?>> rows;
+    try {
+      rows = await _db.rawQuery(sql(true));
+    } catch (_) {
+      // 老版本库没有 is_archived 列。
+      rows = await _db.rawQuery(sql(false));
+    }
+    return [
+      for (final row in rows)
+        if ((row['sid']?.toString() ?? '').isNotEmpty)
+          TraeSessionInfo(
+            sessionId: row['sid']!.toString(),
+            projectId: row['pid']?.toString() ?? '',
+            userId: row['uid']?.toString() ?? '',
+            title: row['title']?.toString() ?? '',
+            projectPath: row['path']?.toString() ?? '',
+            createdAt: _intOf(row['cat']),
+            updatedAt: _intOf(row['uat']),
+            messages: _intOf(row['n']),
+          ),
+    ];
+  }
+
+  /// 扫描列表时用的轻量打开：没有缓存的密钥、客户端也没在跑时返回 null，
+  /// 避免为了列个会话去拉起一个隔离的 Trae 实例抓 key。
+  static Future<TraeChatDb?> tryOpenCached() async {
+    final hasKey =
+        TraeDbKey.fromEnvironment() != null || TraeDbKey.fromCache() != null;
+    if (!hasKey) {
+      final pids = await DesktopClient.runningPids(PlatformKind.trae);
+      if (pids.isEmpty) return null;
+    }
+    try {
+      return await open();
+    } catch (_) {
+      return null;
+    }
+  }
+
+  static int _intOf(Object? value) {
+    if (value is int) return value;
+    if (value is num) return value.toInt();
+    return int.tryParse(value?.toString() ?? '') ?? 0;
   }
 
   /// 读一条会话的全部消息（user / assistant 交替）。

@@ -1,6 +1,7 @@
 import '../data/app_database.dart';
 import '../models/account.dart';
 import 'http_json.dart';
+import 'qoder/qoder_service.dart';
 import 'scheduler.dart';
 import 'trae/trae_service.dart';
 import 'workbuddy/workbuddy_service.dart';
@@ -10,11 +11,13 @@ import 'workbuddy/workbuddy_service.dart';
 class CheckinRunner {
   CheckinRunner(this.db)
       : trae = TraeService(db),
-        workbuddy = WorkBuddyService(db);
+        workbuddy = WorkBuddyService(db),
+        qoder = QoderService(db);
 
   final AppDatabase db;
   final TraeService trae;
   final WorkBuddyService workbuddy;
+  final QoderService qoder;
 
   static String todayKey(DateTime now) =>
       '${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}';
@@ -24,9 +27,11 @@ class CheckinRunner {
     final id = row['id'] as int;
     final provider = PlatformKind.fromId(row['provider'] as String);
     try {
-      final result = provider == PlatformKind.trae
-          ? await trae.status(row)
-          : await workbuddy.status(row);
+      final result = switch (provider) {
+        PlatformKind.trae => await trae.status(row),
+        PlatformKind.workbuddy => await workbuddy.status(row),
+        PlatformKind.qoder => await qoder.status(row),
+      };
       await db.updateStatus(id, result);
       await db.addLog(id, provider, action: 'status', ok: true, message: '状态刷新成功', payload: result);
       return result;
@@ -43,9 +48,11 @@ class CheckinRunner {
   Future<Map<String, dynamic>> checkin(Map<String, Object?> row) async {
     final id = row['id'] as int;
     final provider = PlatformKind.fromId(row['provider'] as String);
-    final result = provider == PlatformKind.trae
-        ? await trae.checkin(row)
-        : await workbuddy.checkin(row);
+    final result = switch (provider) {
+      PlatformKind.trae => await trae.checkin(row),
+      PlatformKind.workbuddy => await workbuddy.checkin(row),
+      PlatformKind.qoder => await qoder.checkin(row),
+    };
     return {'account_id': id, 'provider': provider.id, 'display_name': row['display_name'], ...result};
   }
 

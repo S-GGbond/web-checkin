@@ -55,12 +55,13 @@ class AccountsScreen extends StatelessWidget {
             ),
           )
         else
-          for (final provider in PlatformKind.values) ...[
-            _GroupHeader(provider: provider),
-            const SizedBox(height: AppTokens.space3),
-            _GroupBody(provider: provider),
-            const SizedBox(height: AppTokens.space6),
-          ],
+          for (final provider in PlatformKind.values)
+            if (state.accounts.any((account) => account.provider == provider)) ...[
+              _GroupHeader(provider: provider),
+              const SizedBox(height: AppTokens.space3),
+              _GroupBody(provider: provider),
+              const SizedBox(height: AppTokens.space6),
+            ],
         if (state.accounts.isNotEmpty)
           Row(
             children: [
@@ -93,10 +94,10 @@ class _GroupHeader extends StatelessWidget {
     final state = context.watch<AppState>();
     final palette = AppTokensScope.of(context);
     final count = state.accounts.where((a) => a.provider == provider).length;
-    final color = provider == PlatformKind.trae ? palette.traeColor : palette.workbuddyColor;
+    final color = palette.colorOf(provider);
     final info = state.desktopClient(provider);
-    // 客户端登录态与账号列表放在同一个分组里，只在本平台且该平台有账号时出现。
-    final showSwitcher = state.desktopSwitchSupported && count > 0;
+    // 客户端登录态与账号列表放在同一个分组里；平台不支持换号时整块隐藏。
+    final showSwitcher = state.desktopClientSupported(provider) && count > 0;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -138,7 +139,7 @@ class _GroupBody extends StatelessWidget {
     final state = context.watch<AppState>();
     final palette = AppTokensScope.of(context);
     final accounts = state.accounts.where((a) => a.provider == provider).toList();
-    final canSwitchClient = state.desktopSwitchSupported && (state.desktopClient(provider)?.canSwitch ?? false);
+    final canSwitchClient = state.canSwitchClient(provider);
     if (accounts.isEmpty) {
       return SurfaceCard(
         child: Row(

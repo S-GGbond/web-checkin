@@ -8,6 +8,8 @@ import 'screens/accounts_screen.dart';
 import 'screens/sessions_screen.dart';
 import 'screens/dashboard_screen.dart';
 import 'screens/settings_screen.dart';
+import 'screens/usage_screen.dart';
+import 'services/desktop/desktop_client.dart';
 import 'state/app_state.dart';
 import 'theme/app_theme.dart';
 import 'widgets/account_actions.dart';
@@ -33,12 +35,15 @@ class HubMaterialApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final themeMode = context.select<AppState, ThemeMode>(
+      (state) => state.themeMode,
+    );
     return MaterialApp(
       title: '签到中枢',
       debugShowCheckedModeBanner: false,
       theme: AppTheme.light(),
       darkTheme: AppTheme.dark(),
-      themeMode: ThemeMode.system,
+      themeMode: themeMode,
       locale: const Locale('zh', 'CN'),
       supportedLocales: const [Locale('zh', 'CN'), Locale('en')],
       localizationsDelegates: const [
@@ -67,6 +72,9 @@ class HomeShell extends StatefulWidget {
 class _HomeShellState extends State<HomeShell> with WidgetsBindingObserver {
   int _index = 0;
 
+  /// 只构建用户访问过的页：用量页会发网络请求，不能因为 IndexedStack 预建就开跑。
+  final Set<int> _visited = {0};
+
   @override
   void initState() {
     super.initState();
@@ -90,7 +98,13 @@ class _HomeShellState extends State<HomeShell> with WidgetsBindingObserver {
   static const _destinations = <_Destination>[
     _Destination('概览', Icons.dashboard_rounded, Icons.dashboard_outlined),
     _Destination('账号', Icons.folder_copy_rounded, Icons.folder_copy_outlined),
-    _Destination('会话', Icons.forum_rounded, Icons.forum_outlined),
+    _Destination('用量', Icons.insights_rounded, Icons.insights_outlined),
+    _Destination(
+      '会话',
+      Icons.forum_rounded,
+      Icons.forum_outlined,
+      desktopOnly: true,
+    ),
     _Destination('设置', Icons.tune_rounded, Icons.tune_outlined),
   ];
 
@@ -115,13 +129,30 @@ class _HomeShellState extends State<HomeShell> with WidgetsBindingObserver {
     }
 
     final wide = isWide(context);
+    final destinations = [
+      for (final destination in _destinations)
+        if (!destination.desktopOnly || DesktopClient.supported) destination,
+    ];
+    final index = _index < destinations.length
+        ? _index
+        : destinations.length - 1;
+    final screens = <Widget>[
+      DashboardScreen(
+        onNavigate: (index) => setState(() {
+          _index = index;
+          _visited.add(index);
+        }),
+      ),
+      const AccountsScreen(),
+      const UsageScreen(),
+      if (DesktopClient.supported) const SessionsScreen(),
+      const SettingsScreen(),
+    ];
     final content = IndexedStack(
-      index: _index,
+      index: index,
       children: [
-        DashboardScreen(onNavigate: (index) => setState(() => _index = index)),
-        const AccountsScreen(),
-        const SessionsScreen(),
-        const SettingsScreen(),
+        for (var i = 0; i < screens.length; i++)
+          _visited.contains(i) ? screens[i] : const SizedBox.shrink(),
       ],
     );
 
@@ -130,15 +161,18 @@ class _HomeShellState extends State<HomeShell> with WidgetsBindingObserver {
         body: Row(
           children: [
             NavigationRail(
-              selectedIndex: _index,
-              onDestinationSelected: (index) => setState(() => _index = index),
+              selectedIndex: index,
+              onDestinationSelected: (index) => setState(() {
+                _index = index;
+                _visited.add(index);
+              }),
               labelType: NavigationRailLabelType.all,
               leading: Padding(
                 padding: const EdgeInsets.only(top: AppTokens.space4, bottom: AppTokens.space5),
                 child: const _BrandMark(),
               ),
               destinations: [
-                for (final destination in _destinations)
+                for (final destination in destinations)
                   NavigationRailDestination(
                     icon: Icon(destination.icon),
                     selectedIcon: Icon(destination.selectedIcon),
@@ -160,7 +194,7 @@ class _HomeShellState extends State<HomeShell> with WidgetsBindingObserver {
           children: [
             const _BrandMark(size: 26),
             const SizedBox(width: AppTokens.space3),
-            Text(_destinations[_index].label, style: Theme.of(context).textTheme.titleMedium),
+            Text('签到中枢', style: Theme.of(context).textTheme.titleMedium),
           ],
         ),
         actions: [
@@ -174,10 +208,13 @@ class _HomeShellState extends State<HomeShell> with WidgetsBindingObserver {
       ),
       body: SafeArea(child: content),
       bottomNavigationBar: NavigationBar(
-        selectedIndex: _index,
-        onDestinationSelected: (index) => setState(() => _index = index),
+        selectedIndex: index,
+        onDestinationSelected: (index) => setState(() {
+                _index = index;
+                _visited.add(index);
+              }),
         destinations: [
-          for (final destination in _destinations)
+          for (final destination in destinations)
             NavigationDestination(
               icon: Icon(destination.icon),
               selectedIcon: Icon(destination.selectedIcon),
@@ -190,11 +227,19 @@ class _HomeShellState extends State<HomeShell> with WidgetsBindingObserver {
 }
 
 class _Destination {
-  const _Destination(this.label, this.icon, this.selectedIcon);
+  const _Destination(
+    this.label,
+    this.icon,
+    this.selectedIcon, {
+    this.desktopOnly = false,
+  });
 
   final String label;
   final IconData icon;
   final IconData selectedIcon;
+
+  /// 依赖桌面客户端本地数据的功能：手机端整块不出现。
+  final bool desktopOnly;
 }
 
 /// 品牌标识：渐变圆角方块 + 勾选符号。

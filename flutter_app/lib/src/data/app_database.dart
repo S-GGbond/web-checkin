@@ -20,23 +20,24 @@ class AppDatabase {
 
   static bool _ffiReady = false;
 
-  static Future<AppDatabase> open() async {
-    final path = await resolveDatabasePath();
+  /// [path] 仅测试 / 诊断使用：直接打开指定库，跳过平台目录解析。
+  static Future<AppDatabase> open({String? path}) async {
+    final target = path ?? await resolveDatabasePath();
     final factory = _configureFactory();
     final db = await factory.openDatabase(
-      path,
+      target,
       options: OpenDatabaseOptions(
         version: 1,
         onConfigure: (db) async {
-          await db.execute('PRAGMA foreign_keys = ON');
-          await db.execute('PRAGMA busy_timeout = 5000');
+          await _pragma(db, 'PRAGMA foreign_keys = ON');
+          await _pragma(db, 'PRAGMA busy_timeout = 5000');
         },
         onCreate: (db, _) async => _createSchema(db),
         onUpgrade: (db, _, _) async => _migrate(db),
       ),
     );
-    await _applyFilePermissions(path);
-    return AppDatabase._(db, path);
+    await _applyFilePermissions(target);
+    return AppDatabase._(db, target);
   }
 
   /// 仅测试使用：内存数据库。
@@ -48,11 +49,28 @@ class AppDatabase {
         version: 1,
         // 每个内存库都必须独立，否则同进程内多次打开会复用同一个连接。
         singleInstance: false,
-        onConfigure: (db) async => db.execute('PRAGMA foreign_keys = ON'),
+        onConfigure: (db) async => _pragma(db, 'PRAGMA foreign_keys = ON'),
         onCreate: (db, _) async => _createSchema(db),
       ),
     );
     return AppDatabase._(db, inMemoryDatabasePath);
+  }
+
+  /// 设置型 PRAGMA 走 execute 在 Android 上会被 SQLiteDatabase 当成查询拒绝：
+  /// “Queries can be performed using SQLiteDatabase query or rawQuery methods only”。
+  /// 先试 execute，失败再按查询执行；PRAGMA 只是开关/优化，失败也不该让初始化崩掉。
+  static Future<void> _pragma(Database db, String sql) async {
+    try {
+      await db.execute(sql);
+      return;
+    } catch (_) {
+      // 某些平台（Android）只允许用 rawQuery 执行 PRAGMA。
+    }
+    try {
+      await db.rawQuery(sql);
+    } catch (_) {
+      // 忽略：busy_timeout / foreign_keys 设置失败不影响主流程。
+    }
   }
 
   static DatabaseFactory _configureFactory() {

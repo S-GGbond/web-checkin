@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:path/path.dart' as p;
@@ -7,6 +8,7 @@ import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import '../../models/account.dart';
 import '../../util/app_paths.dart';
 import '../desktop/desktop_client.dart';
+import 'session_service.dart';
 import 'trae_chat_db.dart';
 import 'trae_db_cipher.dart';
 import 'trae_db_key.dart';
@@ -53,6 +55,66 @@ class TraeMergeResult {
   final String? backupPath;
 
   int get rows => tables.values.fold(0, (sum, entry) => sum + entry.$1);
+}
+
+/// 一次「复制会话到另一个账号」的结果（[tables] 为 表名 → 复制的行数）。
+class TraeCopyResult {
+  const TraeCopyResult({
+    required this.toUid,
+    required this.sessions,
+    required this.tables,
+    required this.skipped,
+    required this.newSessionIds,
+    required this.createdProjects,
+    required this.projectPaths,
+    required this.dryRun,
+    this.backupPath,
+  });
+
+  final String toUid;
+
+  /// 实际复制成功的会话数。
+  final int sessions;
+
+  /// 表名 → 复制的行数。
+  final Map<String, int> tables;
+
+  /// 没有会话关联、因而跳过的表。
+  final List<String> skipped;
+
+  /// 旧会话 id → 副本会话 id。
+  final Map<String, String> newSessionIds;
+
+  /// 为目标账号新建的项目行数量（同路径项目直接复用）。
+  final int createdProjects;
+
+  /// 副本所在的项目路径（Trae 按工作区过滤会话，需要打开对应文件夹才看得到）。
+  final List<String> projectPaths;
+  final bool dryRun;
+  final String? backupPath;
+
+  int get rows => tables.values.fold(0, (sum, count) => sum + count);
+}
+
+/// 内部：复制过程的行数与新 id 映射。
+class _CopyOutcome {
+  const _CopyOutcome({
+    required this.tables,
+    required this.sessions,
+    required this.newSessionIds,
+    required this.createdProjects,
+    required this.projectPaths,
+    required this.skipped,
+  });
+
+  final Map<String, int> tables;
+  final int sessions;
+  final Map<String, String> newSessionIds;
+  final int createdProjects;
+  final List<String> projectPaths;
+  final List<String> skipped;
+
+  int get total => tables.values.fold(0, (sum, count) => sum + count);
 }
 
 /// Trae 会话迁移：源机导出明文包，目标机增量合并回加密库。
@@ -167,8 +229,7 @@ class TraeMigrator {
         dstKey ??
         await TraeDbKey.resolve(
           dbPath: target,
-          validate: (candidate) =>
-              TraeDbCipher.validateKey(candidate, target),
+          validate: (candidate) => TraeDbCipher.validateKey(candidate, target),
           log: log,
         );
     if (targetKey == null) {
@@ -234,6 +295,671 @@ class TraeMigrator {
         // 忽略。
       }
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // 复制会话到另一个账号（原账号保留）
+  // ---------------------------------------------------------------------------
+
+  /// 账号级 / 配置级表：两端各有一份，复制会话时整表跳过。
+  static const Set<String> _copySkipTables = {
+    'seaql_migrations',
+    'migration_sql_store',
+    'user_configuration',
+    'model_config_cache',
+    'agent',
+    'agent_member_relation',
+    'mcp_server_agent_relation',
+    'core_memory',
+  };
+
+  /// 每行实体自己的 id 列：复制时换成新 id。
+  static const Map<String, String> _identityColumns = {
+    'chat_session': 'session_id',
+    'chat_message': 'message_id',
+    'chat_turn': 'turn_id',
+    'task': 'task_id',
+    'agent_run': 'agent_run_id',
+    'history_v2': 'history_v2_id',
+    'plan': 'plan_id',
+    'plan_item': 'plan_item_id',
+    'plan_item_core_memory_snapshot': 'picms_id',
+    'proposal': 'proposal_id',
+    'chat_requirement': 'requirement_id',
+    'checkpoint': 'checkpoint_id',
+    'snapshot': 'snapshot_id',
+    'staging': 'staging_id',
+    'worktree': 'worktree_id',
+    'chat_session_goal': 'goal_id',
+    'local_artifact': 'artifact_id',
+    'scheduled_task_executions': 'execution_id',
+    'toolcall': 'toolcall_id',
+    'server_history_info': 'history_id',
+    'im_session_route': 'route_key',
+  };
+
+  /// 关联列：从选中会话出发，按这些列在整个库里做闭包收集。
+  static const Set<String> _linkColumns = {
+    'session_id',
+    'conversation_id',
+    'chat_session_id',
+    'creator_session_id',
+    'writer_session_id',
+    'message_id',
+    'chat_message_id',
+    'reply_to_message_id',
+    'response_message_id',
+    'turn_id',
+    'creator_turn_id',
+    'writer_turn_id',
+    'last_unread_turn_id',
+    'task_id',
+    'agent_run_id',
+    'parent_run_id',
+    'history_v2_id',
+    'plan_id',
+    'plan_item_id',
+    'guideline_id',
+    'proposal_id',
+    'requirement_id',
+    'checkpoint_id',
+    'snapshot_id',
+    'staging_id',
+    'worktree_id',
+    'goal_id',
+    'artifact_id',
+    'toolcall_id',
+    'history_id',
+    'client_history_id',
+  };
+
+  /// 文本里内嵌 id 的列（会话 context、快照 state 等）：同步替换会话与项目 id。
+  static const Set<String> _embeddedIdColumns = {
+    'context',
+    'additional_context',
+    'state',
+    'extra',
+  };
+
+  /// 把 [sessionIds]（属于 [fromUid]）复制一份到 [toUid] 名下，原会话不动。
+  ///
+  /// 复制范围是整条会话图：会话、消息、回合、任务、agent run、历史、服务端历史、
+  /// 快照 / staging / worktree、工件与待办，行里所有实体 id 都换成新 id；
+  /// 目标账号没有同路径项目时新建一行，有则复用。写回前做完整性校验，原库自动备份。
+  ///
+  /// [dryRun] 只试算不写回；[requireClientClosed] 在写本机默认库时要求 Trae 已退出。
+  Future<TraeCopyResult> copySessions({
+    required String toUid,
+    required Set<String> sessionIds,
+    String? fromUid,
+    String? dbPath,
+    String? key,
+    bool dryRun = false,
+    bool requireClientClosed = true,
+    List<String>? stateRoots,
+    void Function(String message)? log,
+  }) async {
+    if (toUid.isEmpty) {
+      throw const TraeMigrationException('需要目标账号');
+    }
+    if (sessionIds.isEmpty) {
+      throw const TraeMigrationException('没有选中任何会话');
+    }
+
+    final target = dbPath ?? TraeChatDb.defaultDatabasePath();
+    if (target == null) {
+      throw const TraeMigrationException('没有找到 Trae 客户端的会话数据库');
+    }
+    if (!await File(target).exists()) {
+      throw TraeMigrationException('会话数据库不存在：$target');
+    }
+    if (requireClientClosed) {
+      final pids = await DesktopClient.runningPids(PlatformKind.trae);
+      if (pids.isNotEmpty) {
+        final ids = pids.join(', ');
+        throw TraeMigrationException(
+          'Trae 正在运行（pid $ids），请先完全退出再复制，否则写入会被客户端覆盖',
+        );
+      }
+    }
+
+    final targetKey =
+        key ??
+        await TraeDbKey.resolve(
+          dbPath: target,
+          validate: (candidate) => TraeDbCipher.validateKey(candidate, target),
+          log: log,
+        );
+    if (targetKey == null) {
+      throw const TraeMigrationException('未能取得会话库密钥');
+    }
+
+    final work = await Directory.systemTemp.createTemp('checkin-hub-copy-');
+    Database? db;
+    try {
+      final plain = await TraeChatDb.decryptToPlain(
+        targetKey,
+        target,
+        await Directory(p.join(work.path, 'dst')).create(recursive: true),
+      );
+      db = await TraeChatDb.openPlain(plain, readOnly: false);
+      await db.execute('PRAGMA journal_mode = DELETE');
+
+      final outcome = await _copyInto(
+        db,
+        sessionIds: sessionIds,
+        toUid: toUid,
+        dryRun: dryRun,
+        log: log,
+      );
+
+      await db.execute('PRAGMA journal_mode = DELETE');
+      final integrity = await db.rawQuery('PRAGMA integrity_check');
+      final verdict = integrity.isEmpty
+          ? ''
+          : integrity.first.values.first?.toString() ?? '';
+      if (verdict != 'ok') {
+        throw TraeMigrationException('复制后完整性校验失败：$verdict（目标库未改动）');
+      }
+      await db.close();
+      db = null;
+
+      if (outcome.sessions == 0 || dryRun) {
+        return TraeCopyResult(
+          toUid: toUid,
+          sessions: outcome.sessions,
+          tables: outcome.tables,
+          skipped: outcome.skipped,
+          newSessionIds: outcome.newSessionIds,
+          createdProjects: outcome.createdProjects,
+          projectPaths: outcome.projectPaths,
+          dryRun: dryRun,
+        );
+      }
+
+      final backup = await _writeBack(target, plain, targetKey);
+
+      // 客户端按 draft:session 键判断会话属于哪个账号：给副本补一份新键，
+      // 否则重启客户端后副本会算回原账号。
+      if (fromUid != null && fromUid.isNotEmpty) {
+        await _copyStateOwnership(
+          fromUid: fromUid,
+          toUid: toUid,
+          sessionIds: outcome.newSessionIds,
+          roots: stateRoots,
+        );
+      }
+
+      return TraeCopyResult(
+        toUid: toUid,
+        sessions: outcome.sessions,
+        tables: outcome.tables,
+        skipped: outcome.skipped,
+        newSessionIds: outcome.newSessionIds,
+        createdProjects: outcome.createdProjects,
+        projectPaths: outcome.projectPaths,
+        dryRun: false,
+        backupPath: backup,
+      );
+    } finally {
+      try {
+        await db?.close();
+      } catch (_) {
+        // 忽略。
+      }
+      try {
+        await work.delete(recursive: true);
+      } catch (_) {
+        // 忽略。
+      }
+    }
+  }
+
+  /// 在已解密的目标库里完成一次复制（事务内插入；任何一步失败都整体回滚）。
+  Future<_CopyOutcome> _copyInto(
+    Database db, {
+    required Set<String> sessionIds,
+    required String toUid,
+    required bool dryRun,
+    void Function(String message)? log,
+  }) async {
+    final tables = (await _tables(db, 'main')).where((table) {
+      if (_copySkipTables.contains(table.name)) return false;
+      // FTS 虚表与影子表交给触发器维护，直接复制会弄坏索引。
+      if (table.name.startsWith('fts_')) return false;
+      return !table.sql.toLowerCase().contains('virtual table');
+    }).toList();
+    final columns = <String, List<({String name, String type, int pk})>>{};
+    final linkedTables = <String, List<String>>{};
+    for (final table in tables) {
+      final info = await _columns(db, table.name, 'main');
+      columns[table.name] = info;
+      for (final column in info) {
+        if (_linkColumns.contains(column.name)) {
+          (linkedTables[column.name] ??= <String>[]).add(table.name);
+        }
+      }
+    }
+
+    // 1) 从选中会话出发，按关联列做闭包：把整条会话图的行都收集出来。
+    final collected = <String, Map<int, Map<String, Object?>>>{};
+    final idMap = <String, String>{};
+    final seen = <String>{};
+    var pending = <String>{};
+    for (final id in sessionIds) {
+      if (id.isEmpty || !seen.add(id)) continue;
+      idMap[id] = _newId('chat_session');
+      pending.add(id);
+    }
+    if (pending.isEmpty) {
+      return const _CopyOutcome(
+        tables: {},
+        sessions: 0,
+        newSessionIds: {},
+        createdProjects: 0,
+        projectPaths: [],
+        skipped: [],
+      );
+    }
+
+    void absorb(String table, List<Map<String, Object?>> rows) {
+      if (rows.isEmpty) return;
+      final bucket = collected.putIfAbsent(
+        table,
+        () => <int, Map<String, Object?>>{},
+      );
+      for (final row in rows) {
+        final rid = row['__rid'];
+        if (rid is! int || bucket.containsKey(rid)) continue;
+        bucket[rid] = row;
+        final identity = _identityColumns[table];
+        if (identity == null) continue;
+        final value = row[identity]?.toString() ?? '';
+        if (value.isEmpty || !seen.add(value)) continue;
+        idMap[value] = _newId(table);
+        pending.add(value);
+      }
+    }
+
+    while (pending.isNotEmpty) {
+      final wave = pending.toList(growable: false);
+      pending = <String>{};
+      for (final entry in linkedTables.entries) {
+        for (var offset = 0; offset < wave.length; offset += 400) {
+          final chunk = wave.sublist(offset, min(offset + 400, wave.length));
+          final marks = List.filled(chunk.length, '?').join(',');
+          for (final table in entry.value) {
+            final rows = await db.rawQuery(
+              'SELECT rowid AS __rid, * FROM "${_quoteIdent(table)}" '
+              'WHERE "${_quoteIdent(entry.key)}" IN ($marks)',
+              chunk,
+            );
+            absorb(table, rows);
+          }
+        }
+      }
+    }
+
+    // todo_list 没有会话列，只能经 history_todo_list.todo_list_id 二级关联。
+    final todoIds = <int>{};
+    for (final row
+        in collected['history_todo_list']?.values ??
+            const <Map<String, Object?>>[]) {
+      final value = row['todo_list_id'];
+      if (value is int) todoIds.add(value);
+    }
+    if (todoIds.isNotEmpty) {
+      final marks = List.filled(todoIds.length, '?').join(',');
+      final rows = await db.rawQuery(
+        'SELECT rowid AS __rid, * FROM todo_list WHERE id IN ($marks)',
+        todoIds.toList(),
+      );
+      absorb('todo_list', rows);
+    }
+
+    final sessions = collected['chat_session'];
+    if (sessions == null || sessions.isEmpty) {
+      return const _CopyOutcome(
+        tables: {},
+        sessions: 0,
+        newSessionIds: {},
+        createdProjects: 0,
+        projectPaths: [],
+        skipped: [],
+      );
+    }
+
+    // 2) 目标账号的项目行：同路径复用，没有就复制一份。
+    final projects = <String, String>{};
+    var createdProjects = 0;
+    for (final row in sessions.values) {
+      final oldPid = row['project_id']?.toString() ?? '';
+      if (oldPid.isEmpty || projects.containsKey(oldPid)) continue;
+      final mapped = await _targetProject(
+        db,
+        sourcePid: oldPid,
+        toUid: toUid,
+        dryRun: dryRun,
+      );
+      projects[oldPid] = mapped.pid;
+      if (mapped.created) createdProjects++;
+    }
+    // Trae 的会话列表按工作区（打开的文件夹）过滤，把这些路径回报给用户。
+    final projectPaths = <String>[];
+    for (final oldPid in projects.keys) {
+      try {
+        final rows = await db.query(
+          'project',
+          columns: ['absolute_path'],
+          where: 'project_id = ?',
+          whereArgs: [oldPid],
+          limit: 1,
+        );
+        final path = rows.isEmpty
+            ? ''
+            : rows.first['absolute_path']?.toString() ?? '';
+        if (path.isNotEmpty && !projectPaths.contains(path)) {
+          projectPaths.add(path);
+        }
+      } catch (_) {
+        // 项目表结构异常时忽略。
+      }
+    }
+    log?.call('目标项目 ${projects.length} 个（新建 $createdProjects 个）');
+
+    // 3) 换新 id 后写回；整数自增主键交给 SQLite 重新分配。
+    final counts = <String, int>{};
+    final todoIdMap = <int, int>{};
+    final historyTodos = <({int rowid, Object? todo})>[];
+
+    Future<void> write(DatabaseExecutor txn) async {
+      for (final entry in collected.entries) {
+        final table = entry.key;
+        if (table == 'project') continue;
+        final info = columns[table]!;
+        final identity = _identityColumns[table];
+        for (final row in entry.value.values) {
+          final values = <String, Object?>{};
+          for (final column in info) {
+            if (column.name == 'id') continue;
+            final raw = row[column.name];
+            values[column.name] = raw is String && raw.isNotEmpty
+                ? _copyText(
+                    column: column.name,
+                    value: raw,
+                    toUid: toUid,
+                    idMap: idMap,
+                    projects: projects,
+                    sessionIds: sessionIds,
+                  )
+                : raw;
+          }
+          if (identity != null && (values[identity]?.toString() ?? '').isEmpty) {
+            values[identity] =
+                idMap[row[identity]?.toString()] ?? _newId(table);
+          }
+          if (table == 'chat_session' && values.containsKey('updated_at')) {
+            values['updated_at'] =
+                DateTime.now().millisecondsSinceEpoch ~/ 1000;
+          }
+
+          counts[table] = (counts[table] ?? 0) + 1;
+          if (dryRun) continue;
+
+          final names = values.keys.toList(growable: false);
+          final quoted = names
+              .map((name) => '"${_quoteIdent(name)}"')
+              .join(',');
+          final marks = List.filled(names.length, '?').join(',');
+          final verb = table == 'local_artifact'
+              ? 'INSERT OR IGNORE'
+              : 'INSERT';
+          final rowid = await txn.rawInsert(
+            '$verb INTO "${_quoteIdent(table)}" ($quoted) VALUES ($marks)',
+            [for (final name in names) values[name]],
+          );
+          if (table == 'todo_list') {
+            final old = row['id'];
+            if (old is int) todoIdMap[old] = rowid;
+          }
+          if (table == 'history_todo_list') {
+            historyTodos.add((rowid: rowid, todo: row['todo_list_id']));
+          }
+        }
+      }
+
+      // 待办主表换了自增 id，明细里的 todo_list_id 跟着改。
+      for (final item in historyTodos) {
+        final old = item.todo;
+        if (old is! int) continue;
+        final next = todoIdMap[old];
+        if (next == null) continue;
+        await txn.rawUpdate(
+          'UPDATE history_todo_list SET todo_list_id = ? WHERE rowid = ?',
+          [next, item.rowid],
+        );
+      }
+    }
+
+    if (dryRun) {
+      await write(db);
+    } else {
+      await db.transaction((txn) async => write(txn));
+    }
+
+    return _CopyOutcome(
+      tables: counts,
+      sessions: sessions.length,
+      newSessionIds: {
+        for (final id in sessionIds)
+          if (idMap[id] != null) id: idMap[id]!,
+      },
+      createdProjects: createdProjects,
+      projectPaths: projectPaths,
+      skipped: [
+        for (final table in tables)
+          if (collected[table.name] == null) table.name,
+      ],
+    );
+  }
+
+  /// 把一行的文本列换成副本里的值：账号、项目、实体 id、内嵌 id 分别处理。
+  String _copyText({
+    required String column,
+    required String value,
+    required String toUid,
+    required Map<String, String> idMap,
+    required Map<String, String> projects,
+    required Set<String> sessionIds,
+  }) {
+    if (column == 'user_id') return toUid;
+    if (column == 'project_id' ||
+        column == 'source_project_id' ||
+        column == 'local_project_id') {
+      return projects[value] ?? value;
+    }
+    final mapped = idMap[value];
+    if (mapped != null) return mapped;
+    if (_embeddedIdColumns.contains(column)) {
+      var text = value;
+      for (final id in sessionIds) {
+        final next = idMap[id];
+        if (next != null && text.contains(id)) text = text.replaceAll(id, next);
+      }
+      for (final entry in projects.entries) {
+        if (text.contains(entry.key)) {
+          text = text.replaceAll(entry.key, entry.value);
+        }
+      }
+      return text;
+    }
+    return value;
+  }
+
+  /// 目标账号里同路径的项目行；没有就复制一份（新 project_id + 新的云端绑定）。
+  Future<({String pid, bool created})> _targetProject(
+    DatabaseExecutor db, {
+    required String sourcePid,
+    required String toUid,
+    required bool dryRun,
+  }) async {
+    final source = await db.query(
+      'project',
+      where: 'project_id = ?',
+      whereArgs: [sourcePid],
+      limit: 1,
+    );
+    if (source.isEmpty) {
+      throw TraeMigrationException('找不到会话所属项目：$sourcePid');
+    }
+    final row = source.first;
+    final path = row['absolute_path']?.toString() ?? '';
+    if (path.isNotEmpty) {
+      final existing = await db.query(
+        'project',
+        where: 'absolute_path = ? AND user_id = ?',
+        whereArgs: [path, toUid],
+        limit: 1,
+      );
+      if (existing.isNotEmpty) {
+        return (pid: existing.first['project_id'].toString(), created: false);
+      }
+    }
+
+    final pid = _randomHex(24);
+    if (!dryRun) {
+      final copy = Map<String, Object?>.from(row)..remove('id');
+      final now = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+      copy['project_id'] = pid;
+      copy['user_id'] = toUid;
+      if (copy.containsKey('biz_project_id')) {
+        copy['biz_project_id'] = _randomHex(32);
+      }
+      if (copy.containsKey('remote_project_id')) {
+        copy['remote_project_id'] = null;
+      }
+      if (copy.containsKey('created_at')) copy['created_at'] = now;
+      if (copy.containsKey('updated_at')) copy['updated_at'] = now;
+      if (copy.containsKey('deleted_at')) copy['deleted_at'] = 0;
+      await db.insert('project', copy);
+    }
+    return (pid: pid, created: true);
+  }
+
+  /// 给副本补一份目标账号的 draft:session 键，原键保留。
+  Future<void> _copyStateOwnership({
+    required String fromUid,
+    required String toUid,
+    required Map<String, String> sessionIds,
+    List<String>? roots,
+  }) async {
+    if (fromUid.isEmpty || sessionIds.isEmpty) return;
+    for (final root in roots ?? SessionService.traeConfigRoots()) {
+      final paths = <String>[
+        p.join(root, 'User', 'globalStorage', 'state.vscdb'),
+      ];
+      final workspaceStorage = Directory(
+        p.join(root, 'User', 'workspaceStorage'),
+      );
+      if (await workspaceStorage.exists()) {
+        try {
+          await for (final entry in workspaceStorage.list()) {
+            if (entry is Directory) {
+              paths.add(p.join(entry.path, 'state.vscdb'));
+            }
+          }
+        } catch (_) {
+          // 忽略。
+        }
+      }
+
+      for (final path in paths) {
+        if (!await File(path).exists()) continue;
+        Database? db;
+        try {
+          db = await databaseFactoryFfi.openDatabase(
+            path,
+            options: OpenDatabaseOptions(singleInstance: false),
+          );
+          for (final entry in sessionIds.entries) {
+            final oldId = entry.key;
+            final newId = entry.value;
+            final prefix = '$fromUid:draft:session:$oldId:';
+            final drafts = await db.query(
+              'ItemTable',
+              where: 'key LIKE ?',
+              whereArgs: ['$prefix%'],
+            );
+            for (final row in drafts) {
+              final key = row['key']?.toString() ?? '';
+              if (!key.startsWith(prefix)) continue;
+              final value = (row['value'] ?? '')
+                  .toString()
+                  .replaceAll(oldId, newId)
+                  .replaceAll(fromUid, toUid);
+              await db.insert('ItemTable', {
+                'key':
+                    '$toUid:draft:session:$newId:${key.substring(prefix.length)}',
+                'value': value,
+              }, conflictAlgorithm: ConflictAlgorithm.replace);
+            }
+
+            // 补全缓存键：ai-chat.chatQueryCompletion.vN.<sessionId>
+            final completions = await db.query(
+              'ItemTable',
+              where: 'key LIKE ?',
+              whereArgs: ['ai-chat.chatQueryCompletion.%$oldId'],
+            );
+            for (final row in completions) {
+              final key = row['key']?.toString() ?? '';
+              if (!key.endsWith(oldId)) continue;
+              final value = (row['value'] ?? '')
+                  .toString()
+                  .replaceAll(oldId, newId);
+              await db.insert('ItemTable', {
+                'key':
+                    '${key.substring(0, key.length - oldId.length)}$newId',
+                'value': value,
+              }, conflictAlgorithm: ConflictAlgorithm.replace);
+            }
+          }
+        } catch (_) {
+          // 状态库被占用时跳过：本地归属记录仍会兜底分组。
+        } finally {
+          try {
+            await db?.close();
+          } catch (_) {
+            // 忽略。
+          }
+        }
+      }
+    }
+  }
+
+  static String _randomHex(int length) {
+    final random = Random.secure();
+    final buffer = StringBuffer();
+    for (var i = 0; i < length; i++) {
+      buffer.write(random.nextInt(16).toRadixString(16));
+    }
+    return buffer.toString();
+  }
+
+  /// 会话 / 消息 / 回合这类 id 是 24 位十六进制；agent_run 用 UUID。
+  static String _newId(String table) =>
+      table == 'agent_run' ? _uuid() : _randomHex(24);
+
+  static String _uuid() {
+    final random = Random.secure();
+    final bytes = List<int>.generate(16, (_) => random.nextInt(256));
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    final hex = bytes
+        .map((value) => value.toRadixString(16).padLeft(2, '0'))
+        .join();
+    return '${hex.substring(0, 8)}-${hex.substring(8, 12)}-'
+        '${hex.substring(12, 16)}-${hex.substring(16, 20)}-'
+        '${hex.substring(20)}';
   }
 
   // ---------------------------------------------------------------------------

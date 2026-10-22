@@ -98,26 +98,54 @@ class SectionTitle extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final palette = AppTokensScope.of(context);
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.end,
+    final text = Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Expanded(
-          child: Column(
+        Text(title, style: Theme.of(context).textTheme.titleLarge),
+        if (subtitle != null) ...[
+          const SizedBox(height: AppTokens.space1),
+          Text(
+            subtitle!,
+            style: TextStyle(
+              color: palette.textSecondary,
+              fontSize: 13,
+              height: 1.4,
+            ),
+          ),
+        ],
+      ],
+    );
+    final extra = trailing;
+    if (extra == null) return text;
+
+    // 窄屏（手机）把操作按钮挪到标题下面，否则标题会被挤成一两个字一行。
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        if (constraints.maxWidth < 560) {
+          return Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(title, style: Theme.of(context).textTheme.titleLarge),
-              if (subtitle != null) ...[
-                const SizedBox(height: AppTokens.space1),
-                Text(subtitle!, style: TextStyle(color: palette.textSecondary, fontSize: 13)),
-              ],
+              text,
+              const SizedBox(height: AppTokens.space3),
+              Align(alignment: Alignment.centerLeft, child: extra),
             ],
-          ),
-        ),
-        ?trailing,
-      ],
+          );
+        }
+        return Row(
+          crossAxisAlignment: CrossAxisAlignment.end,
+          children: [Expanded(child: text), extra],
+        );
+      },
     );
   }
 }
+
+/// 平台图标：账号卡片、分组标题、登录对话框共用。
+IconData providerIcon(PlatformKind provider) => switch (provider) {
+      PlatformKind.workbuddy => Icons.rocket_launch_rounded,
+      PlatformKind.trae => Icons.bolt_rounded,
+      PlatformKind.qoder => Icons.terminal_rounded,
+    };
 
 /// 指标小卡。
 class StatTile extends StatelessWidget {
@@ -176,8 +204,8 @@ class ProviderChip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final palette = AppTokensScope.of(context);
-    final color = provider == PlatformKind.trae ? palette.traeColor : palette.workbuddyColor;
-    final icon = provider == PlatformKind.trae ? Icons.bolt_rounded : Icons.rocket_launch_rounded;
+    final color = palette.colorOf(provider);
+    final icon = providerIcon(provider);
     return Container(
       padding: EdgeInsets.symmetric(
         horizontal: dense ? AppTokens.space2 : AppTokens.space3,
@@ -380,3 +408,120 @@ void showAppSnackBar(BuildContext context, String message, {bool error = false})
       ),
     );
 }
+class SettingsCard extends StatelessWidget {
+  const SettingsCard({
+    super.key,
+    required this.title,
+    required this.children,
+  });
+
+  final String title;
+  final List<Widget> children;
+
+  @override
+  Widget build(BuildContext context) {
+    return SurfaceCard(
+      padding: const EdgeInsets.all(AppTokens.space5),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(title, style: Theme.of(context).textTheme.titleMedium),
+          const SizedBox(height: AppTokens.space4),
+          ...children,
+        ],
+      ),
+    );
+  }
+}
+
+class SettingsRow extends StatelessWidget {
+  const SettingsRow({
+    super.key,
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+    required this.trailing,
+  });
+
+  final IconData icon;
+  final String title;
+  final String subtitle;
+  final Widget trailing;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = AppTokensScope.of(context);
+    return Padding(
+      padding: const EdgeInsets.only(bottom: AppTokens.space3),
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final text = Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(title, style: Theme.of(context).textTheme.titleSmall),
+              const SizedBox(height: 2),
+              Text(
+                subtitle,
+                style: TextStyle(color: palette.textSecondary, fontSize: 12),
+              ),
+            ],
+          );
+          // 窄屏把按钮放到说明下面，避免标题被挤成一两个字一行。
+          final compact = constraints.maxWidth < 480;
+          return Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Icon(icon, size: 18, color: palette.accent),
+              const SizedBox(width: AppTokens.space3),
+              Expanded(
+                child: compact
+                    ? Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          text,
+                          const SizedBox(height: AppTokens.space2),
+                          Align(alignment: Alignment.centerRight, child: trailing),
+                        ],
+                      )
+                    : text,
+              ),
+              if (!compact) ...[
+                const SizedBox(width: AppTokens.space3),
+                trailing,
+              ],
+            ],
+          );
+        },
+      ),
+    );
+  }
+}
+
+class SettingsNote extends StatelessWidget {
+  const SettingsNote({super.key, required this.icon, required this.text});
+
+  final IconData icon;
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = AppTokensScope.of(context);
+    return Padding(
+      padding: const EdgeInsets.only(bottom: AppTokens.space2),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.only(top: 2),
+            child: Icon(icon, size: 15, color: palette.textSecondary),
+          ),
+          const SizedBox(width: AppTokens.space2),
+          Expanded(
+            child: Text(text, style: TextStyle(color: palette.textSecondary, fontSize: 12, height: 1.5)),
+          ),
+        ],
+      ),
+    );
+  }
+}
+

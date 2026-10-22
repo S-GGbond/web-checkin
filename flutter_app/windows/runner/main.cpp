@@ -27,7 +27,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
   FlutterWindow window(project);
   Win32Window::Point origin(10, 10);
   Win32Window::Size size(1280, 720);
-  if (!window.Create(L"checkin_hub", origin, size)) {
+  if (!window.Create(L"\u7B7E\u5230\u4E2D\u67A2", origin, size)) {
     return EXIT_FAILURE;
   }
   window.SetQuitOnClose(true);

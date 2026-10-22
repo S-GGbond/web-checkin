@@ -1,13 +1,18 @@
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
+import 'dart:typed_data';
 
 import 'package:path/path.dart' as p;
+import 'package:pointycastle/digests/md5.dart';
+import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 import '../../models/account.dart';
 import '../../models/chat_session.dart';
 import '../../util/app_paths.dart';
 import '../desktop/desktop_client.dart';
+import '../qoder/qoder_desktop.dart';
+import '../qoder/qoder_sessions.dart';
 import 'trae_chat_db.dart';
 import 'vscdb_reader.dart';
 
@@ -18,6 +23,7 @@ class SessionScanResult {
     this.workbuddyWorkspaces = 0,
     this.workbuddyMetaRows = 0,
     this.workbuddyCliSessions = 0,
+    this.workbuddyAppSessions = 0,
     this.traeRoots = const [],
     this.traeDatabases = 0,
   });
@@ -32,6 +38,9 @@ class SessionScanResult {
 
   /// CLI 会话数量。
   final int workbuddyCliSessions;
+
+  /// WorkBuddy 客户端（`~/.workbuddy`）里的会话数量。
+  final int workbuddyAppSessions;
 
   /// 命中的 Trae 配置目录。
   final List<String> traeRoots;
@@ -68,10 +77,13 @@ class SessionScanResult {
 /// Trae 的正文在 SQLCipher 加密库 `ModularData/ai-agent/database.db` 里，
 /// 由 [TraeChatDb] 抓 key 后按页解密成临时明文库再读出（只读，不改动原库）。
 class SessionService {
-  const SessionService({this.traeReader});
+  const SessionService({this.traeReader, this.traeIndex});
 
   /// 仅测试使用：替换 Trae 正文读取，避免依赖本机装没装 Trae。
   final Future<List<ChatMessage>> Function(ChatSession session)? traeReader;
+
+  /// 仅测试使用：替换 Trae 会话库的索引读取（避免测试去解密本机真实库）。
+  final Future<List<TraeSessionInfo>> Function()? traeIndex;
 
   static const List<String> _sideDirs = ['file-tree', 'plan-task'];
   static const String _untitled = '未命名会话';
@@ -139,6 +151,20 @@ class SessionService {
   static String accountRoot(String dataRoot, String uid) =>
       p.join(dataRoot, uid, 'CodeBuddyIDE', uid);
 
+  /// 工作区 id 由工作区路径决定（客户端用 md5(path)；Windows / macOS 路径
+  /// 大小写不敏感，先转小写）。写进这个目录，客户端打开该文件夹时才看得到。
+  static String workspaceIdForPath(String path) {
+    final value = Platform.isWindows || Platform.isMacOS
+        ? path.toLowerCase()
+        : path;
+    final digest = MD5Digest().process(
+      Uint8List.fromList(utf8.encode(value)),
+    );
+    return digest
+        .map((byte) => byte.toRadixString(16).padLeft(2, '0'))
+        .join();
+  }
+
   static List<String> workbuddySessionDatabases() {
     final candidates = <String>[];
     for (final name in const ['CodeBuddy CN', 'CodeBuddy']) {
@@ -164,6 +190,56 @@ class SessionService {
       }
     }
     return _existingFiles(candidates);
+  }
+
+  /// 记录 Trae 归属改写结果：`{会话id: 新账号}`。会话库里没有账号列，
+  /// 客户端状态库里的 draft 键又可能缺失，扫描时用它兜底分组。
+  static Future<File> traeOwnershipFile() async {
+    final dir = await AppPaths.dataDir();
+    return File(p.join(dir.path, 'trae-ownership.json'));
+  }
+
+  static Future<Map<String, String>> traeOwnership() async {
+    try {
+      final file = await traeOwnershipFile();
+      if (!await file.exists()) return const {};
+      final decoded = jsonDecode(await file.readAsString());
+      if (decoded is! Map) return const {};
+      return {
+        for (final entry in decoded.entries)
+          entry.key.toString(): entry.value.toString(),
+      };
+    } catch (_) {
+      return const {};
+    }
+  }
+
+  static Future<void> rememberTraeOwnership(Map<String, String> mapping) async {
+    if (mapping.isEmpty) return;
+    try {
+      final file = await traeOwnershipFile();
+      final current = <String, dynamic>{};
+      try {
+        if (await file.exists()) {
+          final decoded = jsonDecode(await file.readAsString());
+          if (decoded is Map) current.addAll(decoded.cast<String, dynamic>());
+        }
+      } catch (_) {
+        // 文件损坏时重建。
+      }
+      current.addAll(mapping);
+      await file.parent.create(recursive: true);
+      await file.writeAsString(jsonEncode(current));
+    } catch (_) {
+      // 记录失败不影响迁移本身（下次扫描会退回客户端状态库的归属）。
+    }
+  }
+
+  /// WorkBuddy 客户端自身的数据目录（`~/.workbuddy`）：会话在 `workbuddy.db`，
+  /// 正文在 `projects/<项目>/<会话>.jsonl`。它和 CodeBuddy IDE / CLI 是三套东西。
+  static String? workbuddyAppRoot() {
+    final dir = p.join(_home, '.workbuddy');
+    return Directory(dir).existsSync() ? dir : null;
   }
 
   static String? codebuddyCliRoot() {
@@ -205,6 +281,9 @@ class SessionService {
     List<String>? codebuddyVscdbs,
     String? cliRoot,
     List<String>? traeRoots,
+    String? appRoot,
+    bool scanWorkbuddyApp = true,
+    bool scanQoder = true,
   }) async {
     if (!DesktopClient.supported) return SessionScanResult.empty;
 
@@ -212,6 +291,7 @@ class SessionService {
     final vscdbs = codebuddyVscdbs ?? workbuddySessionDatabases();
     final cli = cliRoot ?? codebuddyCliRoot();
     final trae = traeRoots ?? traeConfigRoots();
+    final app = scanWorkbuddyApp ? (appRoot ?? workbuddyAppRoot()) : null;
 
     final byId = <String, ChatSession>{};
     var workspaces = 0;
@@ -231,9 +311,38 @@ class SessionService {
 
     final cliCount = cli == null ? 0 : await _scanCli(cli, byId);
 
-    final traeScan = await _scanTrae(trae);
+    final appSessions = app == null
+        ? const <ChatSession>[]
+        : await _scanWorkbuddyApp(app);
 
-    final sessions = [...byId.values, ...traeScan.sessions]
+    final traeScan = await _scanTrae(trae);
+    // 归属改写过的会话按记录挂到新账号下（客户端状态库里的 draft 键不一定存在）。
+    final ownership = await traeOwnership();
+    final traeSessions = traeScan.sessions.map((session) {
+      final uid = ownership[session.sessionId];
+      return uid == null ? session : session.copyWith(accountUid: uid);
+    }).toList();
+
+    final qoderScan = DesktopClient.supported && scanQoder
+        ? await QoderSessions.scan(
+            uid: await QoderDesktopAuth.currentUid(),
+          )
+        : const QoderSessionScan(sessions: [], databases: 0, sources: []);
+
+    final sessions = [
+      ...byId.values,
+      ...appSessions,
+      ...traeSessions,
+      ...qoderScan.sessions,
+    ]
+      // 0 条消息的会话没有内容可看，直接不列（Trae/Qoder 拿不到条数，按 0 当未知）。
+      .where(
+        (session) =>
+            session.source == SessionSource.trae ||
+            session.source == SessionSource.qoder ||
+            session.messageCount > 0,
+      )
+      .toList()
       ..sort((a, b) {
         final left = a.updatedAt?.millisecondsSinceEpoch ?? 0;
         final right = b.updatedAt?.millisecondsSinceEpoch ?? 0;
@@ -245,6 +354,7 @@ class SessionService {
       workbuddyWorkspaces: workspaces,
       workbuddyMetaRows: metaRows,
       workbuddyCliSessions: cliCount,
+      workbuddyAppSessions: appSessions.length,
       traeRoots: traeScan.roots,
       traeDatabases: traeScan.databases,
     );
@@ -496,6 +606,8 @@ class SessionService {
     }
 
     var events = 0;
+    // 只数用户 / AI 消息：会话页按这个值过滤「0 条消息」的占位会话。
+    var messages = 0;
     var firstUser = '';
     var cwd = '';
     String? first;
@@ -509,6 +621,10 @@ class SessionService {
         if (value.isNotEmpty) cwd = value;
       }
       first ??= _isoFrom(event['timestamp']);
+      if (event['type'] == 'message' &&
+          (event['role'] == 'user' || event['role'] == 'assistant')) {
+        messages++;
+      }
       if (firstUser.isEmpty &&
           event['type'] == 'message' &&
           event['role'] == 'user') {
@@ -539,12 +655,134 @@ class SessionService {
       title: title.isEmpty ? _timeTitle(last, id) : _clip(title, 80),
       createdAt: first ?? stat.modified.toUtc().toIso8601String(),
       lastMessageAt: last,
-      messageCount: events,
+      messageCount: messages,
       source: SessionSource.workbuddyCli,
       project: cwd.isNotEmpty ? cwd : p.basename(p.dirname(file.path)),
       cwd: cwd,
       path: file.path,
     );
+  }
+
+  // ---------------------------------------------------------------------------
+  // WorkBuddy 客户端（~/.workbuddy）
+  // ---------------------------------------------------------------------------
+
+  /// 读 `workbuddy.db` 的 `sessions` 表，正文按会话 id 去 `projects/` 里找 jsonl。
+  Future<List<ChatSession>> _scanWorkbuddyApp(String root) async {
+    final dbPath = p.join(root, 'workbuddy.db');
+    if (!await File(dbPath).exists()) return const [];
+
+    final files = <String, String>{};
+    final projects = Directory(p.join(root, 'projects'));
+    if (await projects.exists()) {
+      for (final project in await _directoryNames(projects.path)) {
+        List<FileSystemEntity> entries;
+        try {
+          entries = await Directory(
+            p.join(projects.path, project),
+          ).list(followLinks: false).toList();
+        } catch (_) {
+          continue;
+        }
+        for (final entry in entries) {
+          if (entry is! File) continue;
+          final name = p.basename(entry.path);
+          if (!name.endsWith('.jsonl') || name.endsWith('.ndjson')) continue;
+          files[p.basenameWithoutExtension(name)] = entry.path;
+        }
+      }
+    }
+
+    final sessions = <ChatSession>[];
+    Database? db;
+    try {
+      sqfliteFfiInit();
+      db = await databaseFactoryFfi.openDatabase(
+        dbPath,
+        options: OpenDatabaseOptions(readOnly: true, singleInstance: false),
+      );
+      final rows = await db.query(
+        'sessions',
+        where: 'deleted_at IS NULL OR deleted_at = 0',
+      );
+      for (final row in rows) {
+        final id = row['id']?.toString() ?? '';
+        final file = files[id];
+        // 没有正文的（后台任务 / 占位）不列进会话页。
+        if (id.isEmpty || file == null) continue;
+        final parsed = await _readCliFile(File(file));
+        if (parsed == null) continue;
+
+        final custom = row['custom_title']?.toString().trim() ?? '';
+        final title = row['title']?.toString().trim() ?? '';
+        final cwd = row['cwd']?.toString() ?? '';
+        sessions.add(
+          ChatSession(
+            provider: PlatformKind.workbuddy,
+            accountUid: row['user_id']?.toString() ?? '',
+            workspaceId: '',
+            sessionId: id,
+            title: custom.isNotEmpty
+                ? custom
+                : (title.isNotEmpty ? title : parsed.title),
+            createdAt:
+                _isoFrom(row['created_at']) ?? parsed.createdAt,
+            lastMessageAt:
+                _isoFrom(row['last_activity_at']) ??
+                _isoFrom(row['updated_at']) ??
+                parsed.lastMessageAt,
+            messageCount: parsed.messageCount,
+            source: SessionSource.workbuddyApp,
+            project: cwd.isNotEmpty ? cwd : parsed.project,
+            cwd: cwd,
+            model: row['model']?.toString() ?? '',
+            status: row['status']?.toString() ?? '',
+            path: file,
+          ),
+        );
+      }
+    } catch (_) {
+      // 库被客户端锁住时退回只有文件的部分（这里没有文件就没有会话）。
+      return sessions;
+    } finally {
+      try {
+        await db?.close();
+      } catch (_) {
+        // 忽略。
+      }
+    }
+    return sessions;
+  }
+
+  /// 把 WorkBuddy 客户端里的会话改归属：`sessions.user_id` 换账号，正文不动。
+  Future<int> _moveWorkbuddyAppSession({
+    required ChatSession session,
+    required String targetUid,
+    String? dbPath,
+  }) async {
+    final root = workbuddyAppRoot();
+    final path = dbPath ?? (root == null ? null : p.join(root, 'workbuddy.db'));
+    if (path == null || !await File(path).exists()) return 0;
+    Database? db;
+    try {
+      sqfliteFfiInit();
+      db = await databaseFactoryFfi.openDatabase(
+        path,
+        options: OpenDatabaseOptions(singleInstance: false),
+      );
+      return await db.update(
+        'sessions',
+        {'user_id': targetUid},
+        where: 'id = ?',
+        whereArgs: [session.sessionId],
+      );
+    } finally {
+      try {
+        await db?.close();
+      } catch (_) {
+        // 忽略。
+      }
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -563,12 +801,52 @@ class SessionService {
       await _scanTraeAgentDir(root, slots);
       await _scanTraeLogs(root, slots);
     }
+    if (roots.isNotEmpty) await _applyTraeIndex(slots);
 
     return _TraeScan(
       sessions: slots.values.map((slot) => slot.toSession()).toList(),
       roots: roots,
       databases: databases,
     );
+  }
+
+  /// 会话库才是归属的权威来源：chat_session.project_id → project.user_id。
+  ///
+  /// 状态库的 draft 键只覆盖最近打开过的少量会话，日志更稀疏；只靠它们会出现
+  /// 大量「未关联账号」，账号分组也会缺。这里按库里的索引补全归属，并把只存在
+  /// 库里（没有 draft 键 / 快照 / 日志）的会话一并列出来。
+  Future<void> _applyTraeIndex(Map<String, _TraeSlot> slots) async {
+    List<TraeSessionInfo> rows;
+    try {
+      rows = await (traeIndex?.call() ??
+          () async {
+            final db = await TraeChatDb.tryOpenCached();
+            return db == null ? const <TraeSessionInfo>[] : await db.index();
+          }());
+    } catch (_) {
+      // 拿不到会话库（没 key / 客户端未运行）时退回状态库与日志里的归属。
+      return;
+    }
+
+    final known = <String>{};
+    for (final row in rows) {
+      known.add(row.sessionId);
+      final slot = slots.putIfAbsent(
+        row.sessionId,
+        () => _TraeSlot(row.sessionId),
+      );
+      slot.from.add('db');
+      if (row.userId.isNotEmpty) slot.userId = row.userId;
+      if (slot.title.isEmpty) slot.title = row.title;
+      if (slot.messages == null && row.messages > 0) slot.messages = row.messages;
+      if (slot.project.isEmpty) slot.project = row.projectPath;
+      final at = row.updatedAt > 0 ? row.updatedAt * 1000 : 0;
+      if (at > slot.at) slot.at = at;
+    }
+
+    // 会话库是权威来源：状态库 / 快照 / 日志里残留的已删除会话不再展示，
+    // 否则它们没有项目可归属，会一直挂在「未关联账号」下。
+    slots.removeWhere((id, _) => !known.contains(id));
   }
 
   Future<List<String>> _traeStateDatabases(String root) async {
@@ -759,10 +1037,13 @@ class SessionService {
     String? dataRoot,
   }) async {
     switch (session.source) {
+      case SessionSource.workbuddyApp:
       case SessionSource.workbuddyCli:
         return _readCliMessages(session);
       case SessionSource.trae:
         return _readTraeMessages(session);
+      case SessionSource.qoder:
+        return QoderSessions.messages(session);
       case SessionSource.workbuddyDesktop:
         break;
     }
@@ -883,15 +1164,18 @@ class SessionService {
     required List<ChatSession> sessions,
     required String targetUid,
     String? dataRoot,
+    String? metaDbPath,
+    String? appDbPath,
   }) async {
     if (sessions.isEmpty) return 0;
     if (sessions.any((item) => !item.accountMigratable)) {
       throw StateError('只有 WorkBuddy 会话可以迁移到其他账号');
     }
 
-    // 桌面端会话必须来自同一个账号；CLI 会话没有账号归属，不参与这条校验。
+    // CodeBuddy IDE 的会话按账号目录存放，只能整批来自同一个账号；
+    // WorkBuddy 客户端会话是逐行改 user_id，来自不同账号也没问题。
     final sourceUids = sessions
-        .where((item) => item.accountUid.isNotEmpty)
+        .where((item) => item.accountUid.isNotEmpty && !item.movable)
         .map((item) => item.accountUid)
         .toSet();
     if (sourceUids.length > 1) {
@@ -905,15 +1189,24 @@ class SessionService {
     final sourceRoot = accountRoot(dataRoot, sourceUid);
     final targetRoot = accountRoot(dataRoot, targetUid);
     await Directory(targetRoot).create(recursive: true);
-    final labels = await _workspaceLabels(dataRoot);
 
     var copied = 0;
     for (final session in sessions) {
+      if (session.source == SessionSource.workbuddyApp) {
+        final moved = await _moveWorkbuddyAppSession(
+          session: session,
+          targetUid: targetUid,
+          dbPath: appDbPath,
+        );
+        if (moved > 0) copied++;
+        continue;
+      }
       if (session.source == SessionSource.workbuddyCli) {
         if (await _importCliSession(
           targetRoot: targetRoot,
+          targetUid: targetUid,
           session: session,
-          labels: labels,
+          metaDbPath: metaDbPath,
         )) {
           copied++;
         }
@@ -948,10 +1241,92 @@ class SessionService {
         workspaceId: session.workspaceId,
         newId: newId,
         session: session,
+        template: await _conversationEntry(
+          p.join(sourceRoot, 'history', session.workspaceId, 'index.json'),
+          session.sessionId,
+        ),
+      );
+      await _writeSessionMeta(
+        dbPath: metaDbPath,
+        targetUid: targetUid,
+        sessionId: newId,
+        session: session,
       );
       copied++;
     }
     return copied;
+  }
+
+  /// 取源工作区索引里这条会话的条目，复制到目标账号时保留客户端的字段
+  /// （`type`、`isPlayground` 等），只把 id 换成新的。
+  Future<Map<String, dynamic>?> _conversationEntry(
+    String indexPath,
+    String sessionId,
+  ) async {
+    final index = await _readJson(indexPath);
+    final conversations = index['conversations'];
+    if (conversations is! List) return null;
+    for (final raw in conversations) {
+      if (raw is Map && raw['id']?.toString() == sessionId) {
+        return raw.cast<String, dynamic>();
+      }
+    }
+    return null;
+  }
+
+  /// 往 `codebuddy-sessions.vscdb` 写一条 `session:<id>` 元数据，
+  /// 客户端用它显示标题 / 状态，并按 `userId` 归属到账号。
+  Future<void> _writeSessionMeta({
+    String? dbPath,
+    required String targetUid,
+    required String sessionId,
+    required ChatSession session,
+  }) async {
+    final explicit = dbPath != null;
+    final path = dbPath ??
+        (workbuddySessionDatabases().isEmpty
+            ? null
+            : workbuddySessionDatabases().first);
+    if (path == null) return;
+    // 自动探测时只写已存在的库；显式指定时允许新建（测试 / 客户端还没建库）。
+    if (!explicit && !await File(path).exists()) return;
+    await Directory(p.dirname(path)).create(recursive: true);
+    final created =
+        DateTime.tryParse(session.createdAt) ?? DateTime.now().toUtc();
+    final updated = DateTime.tryParse(session.lastMessageAt) ?? created;
+    final cwd = session.cwd.isNotEmpty ? session.cwd : session.project;
+    try {
+      sqfliteFfiInit();
+      final db = await databaseFactoryFfi.openDatabase(
+        path,
+        options: OpenDatabaseOptions(singleInstance: false),
+      );
+      try {
+        await db.execute(
+          'CREATE TABLE IF NOT EXISTS ItemTable (key TEXT PRIMARY KEY, value TEXT)',
+        );
+        await db.insert(
+          'ItemTable',
+          {
+            'key': 'session:$sessionId',
+            'value': jsonEncode({
+              'conversationId': sessionId,
+              'cwd': cwd,
+              'userId': targetUid,
+              'title': session.title,
+              'status': session.status.isEmpty ? 'Completed' : session.status,
+              'createdAt': created.millisecondsSinceEpoch,
+              'updatedAt': updated.millisecondsSinceEpoch,
+            }),
+          },
+          conflictAlgorithm: ConflictAlgorithm.replace,
+        );
+      } finally {
+        await db.close();
+      }
+    } catch (_) {
+      // 元数据只影响客户端的标题/状态展示，写不进去不影响会话本体。
+    }
   }
 
   Future<void> _registerSession({
@@ -959,6 +1334,7 @@ class SessionService {
     required String workspaceId,
     required String newId,
     required ChatSession session,
+    Map<String, dynamic>? template,
   }) async {
     final folder = Directory(p.join(targetRoot, 'history', workspaceId));
     await folder.create(recursive: true);
@@ -981,15 +1357,25 @@ class SessionService {
         ? List<dynamic>.from(index['conversations'] as List)
         : <dynamic>[];
     final now = DateTime.now().toUtc().toIso8601String();
-    conversations.insert(0, {
+    final entry = <String, dynamic>{
       'id': newId,
-      'type': 'chat',
+      'type': 'craft',
       'name': session.title,
       'createdAt': session.createdAt.isEmpty ? now : session.createdAt,
       'lastMessageAt': session.lastMessageAt.isEmpty
           ? now
           : session.lastMessageAt,
-    });
+    };
+    // 客户端可能还认其它字段（type / isPlayground 之类），照搬源条目，
+    // 但标题与时间以我们算出来的为准。
+    if (template != null) {
+      const keep = {'id', 'name', 'createdAt', 'lastMessageAt'};
+      for (final item in template.entries) {
+        if (keep.contains(item.key)) continue;
+        entry[item.key] = item.value;
+      }
+    }
+    conversations.insert(0, entry);
     index['conversations'] = conversations;
     if (index['current'] == null) index['current'] = newId;
 
@@ -999,15 +1385,19 @@ class SessionService {
   /// 把一个 CLI 会话（jsonl）写成目标账号的桌面端会话目录。
   Future<bool> _importCliSession({
     required String targetRoot,
+    required String targetUid,
     required ChatSession session,
-    required Map<String, String> labels,
+    String? metaDbPath,
   }) async {
     final messages = await _readCliMessages(session);
     if (messages.isEmpty) return false;
 
+    // 客户端按「工作区路径的 md5」建目录，只有落在这个目录里，
+    // 用户打开该文件夹时才能看到这条会话。
     final project = session.cwd.isNotEmpty ? session.cwd : session.project;
-    final workspaceId =
-        _workspaceForProject(labels, project) ?? _randomHex(32);
+    final workspaceId = project.isEmpty
+        ? _randomHex(32)
+        : workspaceIdForPath(project);
     final newId = _randomHex(32);
     final dir = p.join(targetRoot, 'history', workspaceId, newId);
     await Directory(p.join(dir, 'messages')).create(recursive: true);
@@ -1047,19 +1437,13 @@ class SessionService {
       newId: newId,
       session: session,
     );
+    await _writeSessionMeta(
+      dbPath: metaDbPath,
+      targetUid: targetUid,
+      sessionId: newId,
+      session: session,
+    );
     return true;
-  }
-
-  /// 目标账号里已有同项目的工作区时复用它，避免每次迁移都新建一个工作区。
-  static String? _workspaceForProject(
-    Map<String, String> labels,
-    String project,
-  ) {
-    if (project.isEmpty) return null;
-    for (final entry in labels.entries) {
-      if (entry.value == project) return entry.key;
-    }
-    return null;
   }
 
   static Future<void> _copyDirectory(Directory source, Directory target) async {
@@ -1372,6 +1756,7 @@ class _TraeSlot {
   final String id;
   String agent = '';
   String userId = '';
+  String project = '';
   String model = '';
   String title = '';
   String preview = '';
@@ -1399,6 +1784,7 @@ class _TraeSlot {
       agent: agent,
       model: model,
       preview: preview,
+      project: project,
       origin: from.toList(),
     );
   }

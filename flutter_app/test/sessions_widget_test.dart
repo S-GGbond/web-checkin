@@ -104,7 +104,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(
-      find.text('共 3 条 · WorkBuddy 桌面端 1 · CLI 1 · Trae 1'),
+      find.text('共 3 条 · CodeBuddy IDE 1 · CLI 1 · Trae 1'),
       findsOneWidget,
     );
     expect(find.text('CodeBuddy CLI'), findsOneWidget);
@@ -142,6 +142,33 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('迁移 1 条到账号…'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('勾选 Trae 会话后可以复制到其他账号', (tester) async {
+    tester.view.physicalSize = const Size(1280, 900);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    await tester.pumpWidget(
+      wrap(SessionsScreen(
+        scanOverride: () async => result(),
+        service: SessionService(traeReader: _noTraeMessages),
+      )),
+    );
+    await tester.pumpAndSettle();
+
+    final row = find
+        .ancestor(
+          of: find.text('请重新生成图片').first,
+          matching: find.byType(Row),
+        )
+        .first;
+    await tester.tap(find.descendant(of: row, matching: find.byType(Checkbox)));
+    await tester.pumpAndSettle();
+
+    expect(find.text('复制 1 条到账号…'), findsOneWidget);
+    expect(find.text('导出 1 条迁移包'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 
