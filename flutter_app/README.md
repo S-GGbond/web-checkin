@@ -25,9 +25,10 @@ flutter build apk --release
 
 ## 下载
 
-v1.0.0 桌面版安装包（deb / rpm / Linux tar.gz / Windows zip / macOS zip + dmg）见
+v1.0.0 安装包（deb / rpm / Linux tar.gz / Windows zip / macOS zip + dmg / iOS ipa）见
 [Releases · v1.0.0](https://github.com/S-GGbond/checkin-hub/releases/tag/v1.0.0)。
 产物统一命名为 `checkin-hub_<版本>_<架构>`，例如 `checkin-hub_1.0.0_amd64.deb`。
+iOS 的 `checkin-hub_1.0.0_ios_arm64.ipa` 是**未签名**包，只能用 AltStore / Sideloadly 侧载。
 
 ### Linux 安装包（deb / rpm）
 

@@ -21,10 +21,12 @@ WorkBuddy / Trae / Qoder 多账号签到与用量查询中枢。
 | Linux 通用 | [checkin-hub_1.0.0_linux_x64.tar.gz](https://github.com/S-GGbond/checkin-hub/releases/download/v1.0.0/checkin-hub_1.0.0_linux_x64.tar.gz) | 解压即用 |
 | Windows | [checkin-hub_1.0.0_windows_x64.zip](https://github.com/S-GGbond/checkin-hub/releases/download/v1.0.0/checkin-hub_1.0.0_windows_x64.zip) | 解压运行 `checkin_hub.exe` |
 | macOS (Apple Silicon) | [.zip](https://github.com/S-GGbond/checkin-hub/releases/download/v1.0.0/checkin-hub_1.0.0_macos_arm64.zip) / [.dmg](https://github.com/S-GGbond/checkin-hub/releases/download/v1.0.0/checkin-hub_1.0.0_macos_arm64.dmg) | 解压或双击安装 |
+| iOS (iPhone, arm64) | [checkin-hub_1.0.0_ios_arm64.ipa](https://github.com/S-GGbond/checkin-hub/releases/download/v1.0.0/checkin-hub_1.0.0_ios_arm64.ipa) | **未签名**，需用 AltStore / Sideloadly 等工具侧载 |
 
 Release 页面：<https://github.com/S-GGbond/checkin-hub/releases/tag/v1.0.0>
 
-移动端（Android APK / iOS）请用 Flutter 工具链自行构建，见下面「从源码运行」。
+iOS 提供的是**未签名** IPA，只能侧载安装（自备开发者证书请用 Flutter 工具链自行构建）；
+Android APK 请用 Flutter 工具链自行构建，见下面「从源码运行」。
 
 ## Flutter 客户端能做什么
 
