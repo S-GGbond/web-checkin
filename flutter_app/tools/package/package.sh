@@ -108,7 +108,8 @@ fi
 exit 0
 EOF
   chmod 0755 "$root/DEBIAN/postinst" "$root/DEBIAN/postrm"
-  dpkg-deb --root-owner-group -Zxz --build "$root" "$OUT/$PKG"_"$VERSION-$RELEASE"_"$DEB_ARCH.deb" >/dev/null
+  # 产物统一命名：checkin-hub_<版本>_<架构>
+  dpkg-deb --root-owner-group -Zxz --build "$root" "$OUT/$PKG"_"$VERSION"_"$DEB_ARCH.deb" >/dev/null
 }
 
 build_rpm() {
@@ -160,6 +161,12 @@ EOF
     -e HOST_GID="$(id -g)" \
     rockylinux:9 \
     bash -c 'dnf -y install rpm-build >/dev/null 2>&1 && rpmbuild --define "_topdir /tmp/rpmbuild" --define "_sourcedir /pkg" --define "_binary_payload w2.xzdio" -bb /pkg/checkin-hub.spec >/dev/null && cp /tmp/rpmbuild/RPMS/*/*.rpm /out/ && chown "$HOST_UID:$HOST_GID" /out/*.rpm && ls /out/*.rpm'
+  # rpmbuild 产出 name-version-release.arch.rpm，统一改成发布资产命名
+  local produced
+  produced=$(ls -t "$OUT"/"$PKG"-*.rpm 2>/dev/null | head -1 || true)
+  if [ -n "$produced" ]; then
+    mv -f "$produced" "$OUT/$PKG"_"$VERSION"_"$RPM_ARCH.rpm"
+  fi
 }
 
 case " $TARGETS " in *" deb "*) build_deb ;; esac
