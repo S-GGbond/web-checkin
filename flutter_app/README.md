@@ -23,6 +23,12 @@ flutter build linux --release
 flutter build apk --release
 ```
 
+## 下载
+
+v1.0.0 桌面版安装包（deb / rpm / Linux tar.gz / Windows zip / macOS zip + dmg）见
+[Releases · v1.0.0](https://github.com/S-GGbond/checkin-hub/releases/tag/v1.0.0)。
+产物统一命名为 `checkin-hub_<版本>_<架构>`，例如 `checkin-hub_1.0.0_amd64.deb`。
+
 ### Linux 安装包（deb / rpm）
 
 ```bash
